@@ -64,6 +64,40 @@ def export_doctype_to_json(doctype_name, app_name):
     return {"path": json_path, "status": "exported"}
 
 
+def _get_unique_naming_series(prefix, doctype_name):
+    """Generate a unique naming series that doesn't conflict with existing ones."""
+    # Check existing naming series
+    existing = frappe.db.sql_list(
+        "SELECT DISTINCT naming_series FROM tabDocType WHERE naming_series IS NOT NULL AND naming_series != ''"
+    )
+    existing_prefixes = set()
+    for series in existing:
+        if series:
+            # Extract prefix before . or #
+            import re
+            match = re.match(r'^([A-Za-z0-9_-]+)', series)
+            if match:
+                existing_prefixes.add(match.group(1))
+
+    # Try the suggested prefix first
+    if prefix and prefix not in existing_prefixes:
+        return prefix
+
+    # Generate a unique prefix based on doctype name
+    base = doctype_name.upper().replace(" ", "-").replace("_", "-")[:10]
+    candidate = base + "-"
+    if candidate not in existing_prefixes:
+        return candidate
+
+    # Add numeric suffix if needed
+    for i in range(1, 100):
+        candidate = f"{base}-{i}-"
+        if candidate not in existing_prefixes:
+            return candidate
+
+    return f"{base}-AUTO-"
+
+
 def create_doctype(app_name, definition):
     """Create a new DocType from a definition dict and sync both JSON and DB."""
     if isinstance(definition, str):
@@ -72,6 +106,40 @@ def create_doctype(app_name, definition):
     doctype_name = definition.get("name")
     if not doctype_name:
         frappe.throw(_("Definition must include 'name'"))
+
+    # Auto-fix naming series to avoid conflicts
+    fields = definition.get("fields", [])
+    naming_series_field = None
+    naming_series_idx = None
+    for idx, field in enumerate(fields):
+        if field.get("fieldname") == "naming_series":
+            naming_series_field = field
+            naming_series_idx = idx
+            break
+
+    if naming_series_field:
+        current_options = naming_series_field.get("options", "")
+        if current_options:
+            # Extract prefix from first series option
+            import re
+            first_series = current_options.split("\n")[0].strip()
+            match = re.match(r'^([A-Za-z0-9_-]+)', first_series)
+            if match:
+                suggested_prefix = match.group(1) + "-"
+                unique_prefix = _get_unique_naming_series(suggested_prefix, doctype_name)
+                if unique_prefix != suggested_prefix:
+                    # Replace the prefix in all series options
+                    new_options = []
+                    for opt in current_options.split("\n"):
+                        opt = opt.strip()
+                        if opt:
+                            new_opt = re.sub(r'^([A-Za-z0-9_-]+)', unique_prefix.rstrip("-"), opt)
+                            new_options.append(new_opt)
+                        else:
+                            new_options.append(opt)
+                    naming_series_field["options"] = "\n".join(new_options)
+                    frappe.msgprint(_("Naming series auto-adjusted from '{0}' to '{1}' to avoid conflicts.").format(
+                        suggested_prefix, unique_prefix))
 
     # 1. Write JSON
     app_path = frappe.get_app_path(app_name)

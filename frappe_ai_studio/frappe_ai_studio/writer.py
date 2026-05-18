@@ -73,19 +73,31 @@ def validate_python_syntax(code):
 def git_snapshot(app_name):
     """Create a git commit in the target app repo before changes."""
     app_path = frappe.get_app_path(app_name)
-    git_dir = os.path.join(os.path.dirname(app_path), ".git")
+    repo_path = os.path.dirname(app_path)
+    git_dir = os.path.join(repo_path, ".git")
     if not os.path.isdir(git_dir):
-        return False, "No git repository found"
+        return True, "No git repository found — skipping snapshot"
 
     try:
+        # Check if there are any changes to commit
+        status_result = subprocess.run(
+            ["git", "-C", repo_path, "status", "--porcelain"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if not status_result.stdout.strip():
+            # Working tree clean — nothing to snapshot
+            return True, "Working tree clean — no snapshot needed"
+
         subprocess.run(
-            ["git", "-C", os.path.dirname(app_path), "add", "-A"],
+            ["git", "-C", repo_path, "add", "-A"],
             check=True,
             capture_output=True,
             text=True,
         )
         subprocess.run(
-            ["git", "-C", os.path.dirname(app_path), "commit", "-m", "ai-studio: pre-change snapshot"],
+            ["git", "-C", repo_path, "commit", "-m", "ai-studio: pre-change snapshot", "--no-verify"],
             check=True,
             capture_output=True,
             text=True,

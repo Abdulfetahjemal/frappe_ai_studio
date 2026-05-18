@@ -26,7 +26,7 @@ cd "$BENCH_PATH"
 # Check if app is installed
 if [ ! -d "apps/$APP_NAME" ]; then
     echo "Installing $APP_NAME..."
-    bench get-app https://github.com/Abdulfetahjemal/frappe_ai_studio.git
+    bench get-app https://github.com/your-org/frappe-ai-studio.git
 else
     echo "Updating $APP_NAME..."
     cd "apps/$APP_NAME"

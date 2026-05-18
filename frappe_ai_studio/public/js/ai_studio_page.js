@@ -1,5 +1,5 @@
 /**
- * AI Studio Page - Fixed for Frappe v15 (no ES modules)
+ * AI Studio Page — Full-featured AI development environment for Frappe
  */
 
 frappe.provide('frappe.ai_studio');
@@ -12,8 +12,14 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
         this.current_provider = 'OpenAI';
         this.current_model = 'gpt-4o';
         this.temperature = 0.2;
+        this.target_app = null;
+        this.installed_apps = [];
+        this.conversation_history = [];
+        this.messages = [];
+        this.loading = false;
         this.setup_page();
         this.load_settings();
+        this.load_installed_apps();
     }
 
     setup_page() {
@@ -21,7 +27,7 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
 
         const layout = $(`
             <div class="ai-studio-layout" style="display:flex;height:calc(100vh - 120px);">
-                <div class="ai-studio-sidebar" style="width:260px;padding:15px;border-right:1px solid var(--border-color);background:var(--card-bg);overflow-y:auto;">
+                <div class="ai-studio-sidebar" style="width:280px;padding:15px;border-right:1px solid var(--border-color);background:var(--card-bg);overflow-y:auto;">
                     <h5 style="margin-bottom:15px;">AI Studio</h5>
                     
                     <div class="settings-section" style="margin-bottom:20px;">
@@ -51,6 +57,13 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
                         </div>
                         
                         <div class="form-group">
+                            <label style="font-size:11px;">Target App</label>
+                            <select class="form-control target-app-select" style="font-size:12px;">
+                                <option value="">All Apps</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
                             <label style="font-size:11px;">Temperature: <span class="temp-value">0.2</span></label>
                             <input type="range" class="form-control temperature-slider" min="0" max="2" step="0.1" value="0.2" style="font-size:12px;">
                         </div>
@@ -74,16 +87,24 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
                         <button class="btn btn-sm btn-outline-primary w-100 btn-save-settings" style="margin-top:10px;">Save Settings</button>
                     </div>
 
+                    <div class="file-browser-section" style="margin-bottom:20px;display:none;">
+                        <h6 style="font-size:12px;text-transform:uppercase;color:var(--text-muted);margin-bottom:10px;">File Browser</h6>
+                        <div class="file-tree" style="font-size:11px;max-height:200px;overflow-y:auto;border:1px solid var(--border-color);border-radius:4px;padding:8px;"></div>
+                    </div>
+
                     <div class="bench-section" style="margin-bottom:20px;">
                         <h6 style="font-size:12px;text-transform:uppercase;color:var(--text-muted);margin-bottom:10px;">Bench Commands</h6>
                         <div class="btn-group-vertical w-100 mb-3">
                             <button class="btn btn-sm btn-outline-secondary btn-migrate">bench migrate</button>
                             <button class="btn btn-sm btn-outline-secondary btn-restart">bench restart</button>
                             <button class="btn btn-sm btn-outline-secondary btn-clear-cache">bench clear-cache</button>
+                            <button class="btn btn-sm btn-outline-secondary btn-build">bench build</button>
                         </div>
                     </div>
                     
                     <button class="btn btn-sm btn-primary w-100 btn-apply" disabled>Apply Last Changes</button>
+                    <button class="btn btn-sm btn-outline-secondary w-100 btn-preview" style="margin-top:5px;display:none;">Preview Changes</button>
+                    <button class="btn btn-sm btn-outline-danger w-100 btn-clear-chat" style="margin-top:5px;">Clear Chat</button>
                 </div>
                 <div class="ai-studio-main" style="flex:1;display:flex;flex-direction:column;padding:15px;">
                     <div class="ai-studio-chat" style="flex:1;overflow-y:auto;border:1px solid var(--border-color);border-radius:8px;padding:15px;margin-bottom:15px;background:var(--card-bg);">
@@ -91,6 +112,9 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
                             <h4>Welcome to AI Studio</h4>
                             <p>Describe what you want to build and the AI agent will help you.</p>
                             <p style="font-size:12px;">Select your preferred model from the sidebar and start prompting!</p>
+                            <p style="font-size:11px;margin-top:10px;">
+                                The AI has full context of your Frappe bench including all apps, DocTypes, controllers, JS files, and templates.
+                            </p>
                         </div>
                     </div>
                     <div class="ai-studio-input" style="display:flex;gap:10px;">
@@ -108,16 +132,17 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
         this.prompt_input = layout.find('.prompt-input');
         this.send_btn = layout.find('.btn-send');
         this.apply_btn = layout.find('.btn-apply');
+        this.preview_btn = layout.find('.btn-preview');
         this.code_editor = layout.find('.code-editor');
         this.provider_select = layout.find('.provider-select');
         this.model_select = layout.find('.model-select');
+        this.target_app_select = layout.find('.target-app-select');
         this.temp_slider = layout.find('.temperature-slider');
         this.temp_value = layout.find('.temp-value');
         this.api_key_input = layout.find('.api-key-input');
         this.api_key_status = layout.find('.api-key-status');
-        this.api_key_hint = layout.find('.api-key-hint');
-        this.messages = [];
-        this.loading = false;
+        this.file_tree_container = layout.find('.file-tree');
+        this.file_browser_section = layout.find('.file-browser-section');
 
         this.bind_events();
     }
@@ -128,10 +153,12 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
             if (e.key === 'Enter') this.send_prompt();
         });
         this.apply_btn.on('click', () => this.apply_changes());
+        this.preview_btn.on('click', () => this.preview_changes());
         
         this.wrapper.find('.btn-migrate').on('click', () => this.run_bench('migrate'));
         this.wrapper.find('.btn-restart').on('click', () => this.run_bench('restart'));
         this.wrapper.find('.btn-clear-cache').on('click', () => this.run_bench('clear-cache'));
+        this.wrapper.find('.btn-build').on('click', () => this.run_bench('build'));
         
         this.provider_select.on('change', (e) => {
             this.current_provider = e.target.value;
@@ -140,6 +167,15 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
         
         this.model_select.on('change', (e) => {
             this.current_model = e.target.value;
+        });
+        
+        this.target_app_select.on('change', (e) => {
+            this.target_app = e.target.value || null;
+            if (this.target_app) {
+                this.load_file_tree(this.target_app);
+            } else {
+                this.file_browser_section.hide();
+            }
         });
         
         this.temp_slider.on('input', (e) => {
@@ -161,6 +197,7 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
         });
         
         this.wrapper.find('.btn-save-settings').on('click', () => this.save_settings());
+        this.wrapper.find('.btn-clear-chat').on('click', () => this.clear_chat());
     }
 
     get_provider_models() {
@@ -173,9 +210,11 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
                 {value: 'gpt-4', label: 'GPT-4'},
                 {value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo'},
                 {value: 'o1-preview', label: 'o1 Preview'},
-                {value: 'o1-mini', label: 'o1 Mini'}
+                {value: 'o1-mini', label: 'o1 Mini'},
+                {value: 'o3-mini', label: 'o3 Mini'}
             ],
             'Anthropic': [
+                {value: 'claude-3-7-sonnet-20250219', label: 'Claude 3.7 Sonnet'},
                 {value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet'},
                 {value: 'claude-3-5-sonnet-latest', label: 'Claude 3.5 Sonnet (Latest)'},
                 {value: 'claude-3-opus-20240229', label: 'Claude 3 Opus'},
@@ -183,6 +222,9 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
                 {value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku'}
             ],
             'Google Gemini': [
+                {value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro'},
+                {value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash'},
+                {value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash'},
                 {value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro'},
                 {value: 'gemini-1.5-pro-latest', label: 'Gemini 1.5 Pro (Latest)'},
                 {value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash'},
@@ -199,7 +241,8 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
                 {value: 'deepseek-chat', label: 'DeepSeek Chat'},
                 {value: 'deepseek-chat-v2', label: 'DeepSeek Chat v2'},
                 {value: 'deepseek-coder', label: 'DeepSeek Coder'},
-                {value: 'deepseek-coder-v2', label: 'DeepSeek Coder v2'}
+                {value: 'deepseek-coder-v2', label: 'DeepSeek Coder v2'},
+                {value: 'deepseek-reasoner', label: 'DeepSeek Reasoner'}
             ],
             'Groq': [
                 {value: 'groq-llama-3.3-70b-versatile', label: 'Llama 3.3 70B'},
@@ -248,7 +291,11 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
         provider_models.forEach(m => {
             this.model_select.append('<option value="' + m.value + '">' + m.label + '</option>');
         });
-        this.current_model = provider_models[0].value;
+        // If current model is not in the list, add it as a custom option
+        const model_values = provider_models.map(m => m.value);
+        if (this.current_model && !model_values.includes(this.current_model)) {
+            this.model_select.append('<option value="' + this.current_model + '">' + this.current_model + '</option>');
+        }
     }
 
     async load_settings() {
@@ -265,6 +312,11 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
                 this.provider_select.val(this.current_provider);
                 this.update_model_options();
                 this.model_select.val(this.current_model);
+                // If model wasn't found in select, it was added as custom option - select it
+                if (this.model_select.val() !== this.current_model) {
+                    this.model_select.append('<option value="' + this.current_model + '">' + this.current_model + '</option>');
+                    this.model_select.val(this.current_model);
+                }
                 this.temp_slider.val(this.temperature);
                 this.temp_value.text(this.temperature.toFixed(1));
                 
@@ -281,6 +333,73 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
             }
         } catch (err) {
             console.log('Could not load settings:', err);
+        }
+    }
+
+    async load_installed_apps() {
+        try {
+            const r = await frappe.call({
+                method: 'frappe_ai_studio.frappe_ai_studio.api.get_installed_apps'
+            });
+            if (r.message) {
+                this.installed_apps = r.message;
+                this.target_app_select.empty();
+                this.target_app_select.append('<option value="">All Apps</option>');
+                this.installed_apps.forEach(app => {
+                    this.target_app_select.append('<option value="' + app + '">' + app + '</option>');
+                });
+            }
+        } catch (err) {
+            console.log('Could not load installed apps:', err);
+        }
+    }
+
+    async load_file_tree(app_name) {
+        try {
+            const r = await frappe.call({
+                method: 'frappe_ai_studio.frappe_ai_studio.api.list_app_files',
+                args: { app_name: app_name, max_depth: 4 }
+            });
+            if (r.message && r.message.files) {
+                this.file_browser_section.show();
+                this.render_file_tree(r.message.files, app_name);
+            }
+        } catch (err) {
+            console.log('Could not load file tree:', err);
+        }
+    }
+
+    render_file_tree(files, app_name) {
+        let html = '<ul style="list-style:none;padding-left:0;margin:0;">';
+        files.slice(0, 100).forEach(f => {
+            html += '<li style="padding:2px 0;cursor:pointer;" class="file-item" data-path="' + f + '">';
+            html += '<i class="fa fa-file-code-o" style="margin-right:4px;color:var(--text-muted);"></i>';
+            html += f;
+            html += '</li>';
+        });
+        if (files.length > 100) {
+            html += '<li style="padding:2px 0;color:var(--text-muted);">... and ' + (files.length - 100) + ' more files</li>';
+        }
+        html += '</ul>';
+        this.file_tree_container.html(html);
+        
+        this.file_tree_container.find('.file-item').on('click', (e) => {
+            const path = $(e.currentTarget).data('path');
+            this.read_file_into_chat(app_name, path);
+        });
+    }
+
+    async read_file_into_chat(app_name, relative_path) {
+        try {
+            const r = await frappe.call({
+                method: 'frappe_ai_studio.frappe_ai_studio.api.read_file',
+                args: { app_name: app_name, relative_path: relative_path }
+            });
+            if (r.message) {
+                this.append_message('system', 'File: ' + relative_path + '\n```\n' + r.message.content + '\n```');
+            }
+        } catch (err) {
+            frappe.show_alert('Could not read file: ' + relative_path);
         }
     }
 
@@ -330,6 +449,23 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
         this.chat_container.find('.chat-welcome').remove();
     }
 
+    clear_chat() {
+        this.chat_container.empty();
+        this.messages = [];
+        this.conversation_history = [];
+        this.apply_btn.prop('disabled', true);
+        this.preview_btn.hide();
+        this.code_editor.val('');
+        
+        $(`
+            <div class="chat-welcome" style="text-align:center;color:var(--text-muted);padding:40px;">
+                <h4>Welcome to AI Studio</h4>
+                <p>Describe what you want to build and the AI agent will help you.</p>
+                <p style="font-size:12px;">Select your preferred model from the sidebar and start prompting!</p>
+            </div>
+        `).appendTo(this.chat_container);
+    }
+
     async send_prompt() {
         const text = this.prompt_input.val().trim();
         if (!text || this.loading) return;
@@ -347,12 +483,27 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
                     user_prompt: text,
                     provider: this.current_provider,
                     model: this.current_model,
-                    temperature: this.temperature
+                    temperature: this.temperature,
+                    target_app: this.target_app,
+                    conversation_history: JSON.stringify(this.conversation_history)
                 },
             });
             if (r.message && r.message.status === 'success') {
                 this.append_message('assistant', r.message.response);
                 this.apply_btn.prop('disabled', false);
+                this.preview_btn.show();
+                
+                // Update conversation history
+                this.conversation_history.push({role: 'user', content: text});
+                this.conversation_history.push({role: 'assistant', content: r.message.response});
+                
+                // Limit history to last 10 exchanges to manage token usage
+                if (this.conversation_history.length > 20) {
+                    this.conversation_history = this.conversation_history.slice(-20);
+                }
+                
+                // Try to extract JSON payload for the code editor
+                this.try_extract_payload(r.message.response);
             } else {
                 this.append_message('system', 'Unexpected response from agent.');
             }
@@ -361,6 +512,75 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
         } finally {
             this.loading = false;
             this.send_btn.prop('disabled', false).text('Send');
+        }
+    }
+
+    try_extract_payload(response) {
+        try {
+            const m = response.match(/```json\n([\s\S]*?)\n```/);
+            if (m) {
+                const payload = JSON.parse(m[1]);
+                this.code_editor.val(JSON.stringify(payload, null, 2));
+            }
+        } catch (e) {
+            // Not valid JSON, ignore
+        }
+    }
+
+    async preview_changes() {
+        const last = this.messages[this.messages.length - 1];
+        if (!last || last.role !== 'assistant') {
+            frappe.show_alert('No AI response to preview.');
+            return;
+        }
+
+        let payload = null;
+        try {
+            const m = last.text.match(/```json\n([\s\S]*?)\n```/);
+            payload = JSON.parse(m ? m[1] : last.text);
+        } catch {
+            frappe.show_alert('Could not parse AI response as changes.');
+            return;
+        }
+
+        if (!payload.app_name || !payload.changes) {
+            frappe.show_alert('Invalid change payload.');
+            return;
+        }
+
+        try {
+            const r = await frappe.call({
+                method: 'frappe_ai_studio.frappe_ai_studio.api.preview_changes',
+                args: {
+                    app_name: payload.app_name,
+                    changes: JSON.stringify(payload.changes),
+                },
+            });
+            if (r.message && r.message.status === 'preview') {
+                // Show preview in a dialog
+                let preview_html = '<div style="max-height:400px;overflow-y:auto;">';
+                r.message.preview.forEach(item => {
+                    preview_html += '<div style="margin-bottom:15px;border:1px solid var(--border-color);border-radius:4px;padding:10px;">';
+                    preview_html += '<strong>' + item.type + '</strong>: ' + item.relative_path + '<br/>';
+                    preview_html += '<pre style="margin-top:5px;font-size:11px;background:var(--gray-100);padding:8px;border-radius:4px;max-height:200px;overflow-y:auto;">' + frappe.utils.escape_html(item.preview) + '</pre>';
+                    preview_html += '</div>';
+                });
+                preview_html += '</div>';
+                
+                const d = new frappe.ui.Dialog({
+                    title: 'Preview Changes',
+                    fields: [{fieldtype: 'HTML', fieldname: 'preview_content'}],
+                    primary_action_label: 'Apply Changes',
+                    primary_action: () => {
+                        d.hide();
+                        this.apply_changes();
+                    }
+                });
+                d.fields_dict.preview_content.$wrapper.html(preview_html);
+                d.show();
+            }
+        } catch (err) {
+            this.append_message('system', 'Preview failed: ' + (err.message || 'Error'));
         }
     }
 
@@ -395,6 +615,7 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
             });
             if (r.message && r.message.status === 'applied') {
                 frappe.show_alert('Changes applied successfully.');
+                this.append_message('system', 'Changes applied to ' + payload.app_name + '. ' + (payload.explanation || ''));
             }
         } catch (err) {
             this.append_message('system', 'Apply failed: ' + (err.message || 'Error'));

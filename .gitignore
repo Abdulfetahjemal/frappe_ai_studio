@@ -1,1 +1,14 @@
-.playwright-mcp/
+*.pyc
+__pycache__/
+*.egg-info/
+dist/
+build/
+*.log
+.DS_Store
+node_modules/
+.env
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

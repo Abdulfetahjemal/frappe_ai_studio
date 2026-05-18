@@ -5,6 +5,7 @@ from __future__ import unicode_literals
 
 import json
 import os
+import subprocess
 
 import frappe
 from frappe import _
@@ -69,13 +70,18 @@ MODEL_PROVIDER_MAP = {
     "gpt-3.5-turbo": "OpenAI",
     "o1-preview": "OpenAI",
     "o1-mini": "OpenAI",
+    "o3-mini": "OpenAI",
     # Anthropic
     "claude-3-5-sonnet-20241022": "Anthropic",
     "claude-3-5-sonnet-latest": "Anthropic",
     "claude-3-opus-20240229": "Anthropic",
     "claude-3-sonnet-20240229": "Anthropic",
     "claude-3-haiku-20240307": "Anthropic",
+    "claude-3-7-sonnet-20250219": "Anthropic",
     # Google Gemini
+    "gemini-2.5-pro": "Google Gemini",
+    "gemini-2.5-flash": "Google Gemini",
+    "gemini-2.0-flash": "Google Gemini",
     "gemini-1.5-pro": "Google Gemini",
     "gemini-1.5-pro-latest": "Google Gemini",
     "gemini-1.5-flash": "Google Gemini",
@@ -91,6 +97,7 @@ MODEL_PROVIDER_MAP = {
     "deepseek-chat-v2": "DeepSeek",
     "deepseek-coder": "DeepSeek",
     "deepseek-coder-v2": "DeepSeek",
+    "deepseek-reasoner": "DeepSeek",
     # Groq
     "groq-llama-3.3-70b-versatile": "Groq",
     "groq-llama-3.1-70b-versatile": "Groq",
@@ -126,8 +133,6 @@ MODEL_PROVIDER_MAP = {
 
 def _get_active_settings():
     """Return the AI Studio Settings single doc (or None)."""
-    if not frappe.db.table_exists("AI Studio Settings"):
-        return None
     if frappe.db.exists("AI Studio Settings", "AI Studio Settings"):
         return frappe.get_doc("AI Studio Settings", "AI Studio Settings")
     return None
@@ -157,6 +162,138 @@ def _get_llm_config(provider=None, model=None, temperature=None):
 def _resolve_provider_from_model(model):
     """Guess provider from model id."""
     return MODEL_PROVIDER_MAP.get(model, "OpenAI")
+
+
+# ---------------------------------------------------------------------------
+# System Prompt
+# ---------------------------------------------------------------------------
+
+DEFAULT_SYSTEM_PROMPT = """You are an expert Frappe/ERPNext developer and system architect. You have deep knowledge of:
+- Frappe Framework v15 architecture (DocTypes, controllers, hooks, whitelisted APIs, server/client scripts)
+- ERPNext v15 modules (Accounting, Stock, CRM, HR, Manufacturing, etc.)
+- Python, JavaScript, MariaDB, Jinja2 templating
+- Frappe app structure, bench commands, and deployment
+
+Your goal is to help users build, customize, and maintain Frappe/ERPNext applications.
+
+## PROJECT CONTEXT
+You will receive a JSON context containing:
+- The bench path and installed apps
+- For each app: hooks.py, modules, DocType definitions, API files, controllers, JS files, templates, CSS, fixtures, reports, pages
+- Site configuration (developer_mode, installed apps)
+- Database schema summary
+
+## OUTPUT FORMAT FOR CODE CHANGES
+When the user asks you to create or modify code, respond with a JSON payload wrapped in ```json blocks:
+
+```json
+{
+  "app_name": "target_app_name",
+  "changes": [
+    {
+      "type": "write",
+      "relative_path": "path/relative/to/app/root.py",
+      "content": "full file content",
+      "action": "overwrite"
+    },
+    {
+      "type": "inject_method",
+      "relative_path": "path/to/file.py",
+      "class_name": "ClassName",
+      "method_code": "def new_method(self):\\n    pass"
+    },
+    {
+      "type": "update_json",
+      "relative_path": "doctype/MyDoc/MyDoc.json",
+      "updates": {"fieldname": "new_value"}
+    },
+    {
+      "type": "create_doctype",
+      "definition": {"name": "NewDoc", "module": "My Module", "fields": [...]}
+    },
+    {
+      "type": "sync_doctype",
+      "relative_path": "doctype/MyDoc/MyDoc.json"
+    },
+    {
+      "type": "run_bench",
+      "command": "migrate"
+    }
+  ],
+  "explanation": "Human-readable explanation of what was changed and why"
+}
+```
+
+## CHANGE TYPES
+- **write**: Write or overwrite a file. Use action "overwrite" or "append".
+- **inject_method**: Inject a method into an existing Python class (requires libcst).
+- **update_json**: Deep-merge updates into a JSON file (great for DocType modifications).
+- **create_doctype**: Create a new DocType from a JSON definition (writes JSON + syncs to DB).
+- **sync_doctype**: Sync an existing DocType JSON to the database.
+- **run_bench**: Run a bench command (migrate, restart, clear-cache, build).
+
+## BEST PRACTICES
+1. Always use frappe.get_doc(), frappe.db.sql(), frappe.throw() following Frappe conventions
+2. Whitelist API methods with @frappe.whitelist()
+3. Use proper DocType naming (PascalCase for DocType names, snake_case for fieldnames)
+4. Include proper permissions in DocType definitions
+5. For JS files, use frappe.provide() and follow Frappe's JS patterns
+6. For hooks, use the correct event names (doc_events, scheduler_events, etc.)
+7. When modifying existing files, prefer update_json or inject_method over full overwrite
+8. Always explain your changes in the "explanation" field
+9. If you need to see a specific file not in context, ask the user to use the "Read File" feature
+
+## CRITICAL: NAMING SERIES CONFLICTS
+When creating DocTypes that use naming_series, ALWAYS check the existing_docTypes list in the context.
+- NEVER use a naming series prefix that conflicts with existing DocTypes (e.g., "TASK-" is used by ERPNext's "Task" DocType)
+- Use UNIQUE naming series like "AST-" for "AI Studio Task", "ASTK-" for "AI Studio Task", or "AI-STUDIO-TASK-"
+- When in doubt, use the DocType name as prefix: "AI-STUDIO-TASK-.####"
+- The context includes a list of existing_docTypes - check it before creating new ones
+
+## CRITICAL: CORE APP CUSTOMIZATION
+The context includes an "app_metadata" section that tells you if an app is a "core" app.
+- **Core apps** (frappe, erpnext) should NOT be modified directly via file writes.
+- Instead, use the customization change types: `custom_field`, `property_setter`, `server_script`, `client_script`
+- These customizations are stored in the database and survive updates.
+
+## CUSTOMIZATION CHANGE TYPES (for core apps like frappe/erpnext)
+- **custom_field**: Add a custom field to an existing DocType
+  ```json
+  {"type": "custom_field", "doctype": "Sales Invoice", "field": {"fieldname": "custom_notes", "fieldtype": "Text", "label": "Notes"}}
+  ```
+- **property_setter**: Change a property of an existing DocType/field
+  ```json
+  {"type": "property_setter", "doctype": "Sales Invoice", "fieldname": "customer", "property": "label", "value": "Client"}
+  ```
+- **server_script**: Create a Server Script for business logic
+  ```json
+  {"type": "server_script", "name": "My Script", "script_type": "DocType Event", "doctype": "Sales Invoice", "event": "before_submit", "script": "doc.custom_status = 'Submitted'"}
+  ```
+- **client_script**: Create a Client Script for UI behavior
+  ```json
+  {"type": "client_script", "name": "My Client Script", "dt": "Sales Invoice", "script": "frappe.ui.form.on('Sales Invoice', { refresh: function(frm) { ... } })"}
+  ```
+
+## CRITICAL: DOCTYPE NAMING RULE VALID VALUES
+The "naming_rule" field in DocType JSON MUST be exactly one of these:
+- "" (empty string)
+- "Set by user"
+- "Autoincrement"
+- "By fieldname"
+- "By \"Naming Series\" field"  (EXACTLY this with quotes)
+- "Expression"
+- "Expression (old style)"
+- "Random"
+- "By script"
+
+If using naming_series field, set naming_rule to: "By \"Naming Series\" field"
+If using autoname like "AI-STUDIO-TASK-.####", set naming_rule to: "By \"Naming Series\" field"
+
+## SAFETY
+- Git snapshots are taken automatically before changes
+- Changes are rolled back automatically if any step fails
+- Python syntax is validated before writing .py files
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -225,38 +362,50 @@ def _call_anthropic(messages, model, temperature, api_key, api_base_url=None, ma
 
 
 def _call_gemini(messages, model, temperature, api_key, api_base_url=None, max_tokens=4096):
-    import requests
+    """Call Gemini API using the official Google GenAI SDK."""
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError:
+        raise frappe.ValidationError(_("Google GenAI SDK not installed. Run: pip install google-genai"))
 
     if not api_key:
         raise frappe.ValidationError(_("Gemini API key not configured"))
 
-    base = (api_base_url or PROVIDER_ENDPOINTS["Google Gemini"]).rstrip("/")
-    url = "{}/{}:generateContent?key={}".format(base, model, api_key)
+    client = genai.Client(api_key=api_key)
 
-    # Convert OpenAI-style messages to Gemini contents
-    contents = []
     system_text = ""
+    contents = []
+
     for m in messages:
         if m.get("role") == "system":
             system_text = m.get("content", "")
-        else:
-            role = "user" if m.get("role") == "user" else "model"
-            contents.append({"role": role, "parts": [{"text": m.get("content", "")}]})
+        elif m.get("role") == "user":
+            contents.append(types.Content(
+                role="user",
+                parts=[types.Part(text=m.get("content", ""))]
+            ))
+        elif m.get("role") == "assistant":
+            contents.append(types.Content(
+                role="model",
+                parts=[types.Part(text=m.get("content", ""))]
+            ))
 
-    payload = {
-        "contents": contents,
-        "generationConfig": {
-            "temperature": temperature,
-            "maxOutputTokens": max_tokens,
-        },
-    }
+    config = types.GenerateContentConfig(
+        temperature=temperature,
+        max_output_tokens=max_tokens,
+    )
+
     if system_text:
-        payload["systemInstruction"] = {"parts": [{"text": system_text}]}
+        config.system_instruction = system_text
 
-    resp = requests.post(url, json=payload, timeout=120)
-    resp.raise_for_status()
-    data = resp.json()
-    return data["candidates"][0]["content"]["parts"][0]["text"]
+    response = client.models.generate_content(
+        model=model,
+        contents=contents,
+        config=config,
+    )
+
+    return response.text
 
 
 def _call_kimi(messages, model, temperature, api_key, api_base_url=None, max_tokens=4096):
@@ -486,7 +635,7 @@ def _run_llm(messages, provider=None, model=None, temperature=None):
 @frappe.whitelist()
 def get_context(target_app=None):
     """Return the current bench context (cached)."""
-    return get_cached_context()
+    return get_cached_context(target_app=target_app)
 
 
 @frappe.whitelist()
@@ -500,6 +649,13 @@ def get_llm_providers():
             "env_var": PROVIDER_API_KEY_ENV.get(name),
         })
     return providers
+
+
+@frappe.whitelist()
+def get_installed_apps():
+    """Return list of installed apps in the bench."""
+    from frappe_ai_studio.frappe_ai_studio.context_engine import list_installed_apps
+    return list_installed_apps()
 
 
 @frappe.whitelist()
@@ -564,6 +720,41 @@ def read_file(app_name, relative_path):
 
 
 @frappe.whitelist()
+def list_app_files(app_name, max_depth=4):
+    """List all files in an app up to a certain depth."""
+    try:
+        max_depth = int(max_depth)
+    except (ValueError, TypeError):
+        max_depth = 4
+    try:
+        app_path = frappe.get_app_path(app_name)
+    except Exception:
+        return {"files": [], "tree": {}}
+
+    files = []
+    tree = {"name": app_name, "type": "folder", "children": []}
+
+    # Build file list and tree
+    for root, dirs, filenames in os.walk(app_path):
+        # Skip hidden dirs, __pycache__, node_modules, .git
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("__pycache__", "node_modules")]
+
+        rel_root = os.path.relpath(root, app_path)
+        depth = rel_root.count(os.sep)
+        if depth > max_depth:
+            del dirs[:]
+            continue
+
+        for fname in filenames:
+            if fname.startswith("."):
+                continue
+            rel_path = os.path.join(rel_root, fname) if rel_root != "." else fname
+            files.append(rel_path.replace("\\", "/"))
+
+    return {"files": files, "app_path": app_path}
+
+
+@frappe.whitelist()
 def write_code(app_name, relative_path, content, action="overwrite"):
     """Write code to a file with pre-flight validation."""
     file_path = resolve_app_path(app_name, *relative_path.strip("/").split("/"))
@@ -623,7 +814,7 @@ def rollback_app(app_name):
 @frappe.whitelist()
 def run_bench_command(command):
     """Run an allowed bench command."""
-    allowed = {"migrate", "restart", "clear-cache", "build", "watch"}
+    allowed = {"migrate", "restart", "clear-cache", "build", "watch", "build --app frappe_ai_studio"}
     if command not in allowed:
         frappe.throw(_("Command '{0}' is not allowed").format(command))
 
@@ -646,11 +837,10 @@ def run_bench_command(command):
 
 
 @frappe.whitelist()
-def execute_prompt(prompt_name, user_prompt=None, target_app=None, provider=None, model=None, temperature=None):
+def execute_prompt(prompt_name, user_prompt=None, target_app=None, provider=None, model=None, temperature=None, conversation_history=None):
     """Execute a stored prompt against the LLM and return the response."""
     if prompt_name == "__direct__":
-        # Direct execution without a stored prompt doc
-        system = "You are an expert Frappe/ERPNext developer. Help build features and fix bugs."
+        system = DEFAULT_SYSTEM_PROMPT
         user = user_prompt or ""
         cfg = _get_llm_config(provider=provider, model=model, temperature=temperature)
         model = model or cfg["model"]
@@ -658,7 +848,7 @@ def execute_prompt(prompt_name, user_prompt=None, target_app=None, provider=None
         provider = provider or cfg["provider"]
     else:
         prompt_doc = frappe.get_doc("AI Studio Prompt", prompt_name)
-        system = prompt_doc.system_prompt or ""
+        system = prompt_doc.system_prompt or DEFAULT_SYSTEM_PROMPT
         user = user_prompt or prompt_doc.user_prompt or ""
         model = model or prompt_doc.model or _get_llm_config()["model"]
         temperature = temperature if temperature is not None else (prompt_doc.temperature or _get_llm_config()["temperature"])
@@ -670,13 +860,23 @@ def execute_prompt(prompt_name, user_prompt=None, target_app=None, provider=None
     context = build_context(target_app=app)
     context_json = json.dumps(context, indent=2, default=str)
 
-    messages = [
-        {"role": "system", "content": system},
-        {
-            "role": "user",
-            "content": "Bench Context:\n```json\n{}```\n\nUser Request:\n{}".format(context_json, user),
-        },
-    ]
+    # Build messages with conversation history
+    messages = [{"role": "system", "content": system}]
+
+    # Add conversation history if provided
+    if conversation_history:
+        if isinstance(conversation_history, str):
+            conversation_history = json.loads(conversation_history)
+        for msg in conversation_history:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if role in ("user", "assistant") and content:
+                messages.append({"role": role, "content": content})
+
+    messages.append({
+        "role": "user",
+        "content": "Bench Context:\n```json\n{}```\n\nUser Request:\n{}".format(context_json, user),
+    })
 
     log = frappe.get_doc(
         {
@@ -718,21 +918,235 @@ def apply_ai_changes(app_name, changes):
         for change in changes:
             ctype = change.get("type")
             rel = change.get("relative_path")
+
             if ctype == "write":
                 write_code(app_name, rel, change["content"], action=change.get("action", "overwrite"))
             elif ctype == "inject_method":
                 inject_method(app_name, rel, change["class_name"], change["method_code"])
             elif ctype == "update_json":
                 update_json(app_name, rel, change["updates"])
+            elif ctype == "create_doctype":
+                from frappe_ai_studio.frappe_ai_studio.schema_wizard import create_doctype
+                definition = change.get("definition") or change.get("updates")
+                create_doctype(app_name, definition)
+            elif ctype == "sync_doctype":
+                from frappe_ai_studio.frappe_ai_studio.schema_wizard import sync_doctype_from_json
+                sync_doctype_from_json(app_name, rel)
+            elif ctype == "run_bench":
+                run_bench_command(change["command"])
+            elif ctype == "custom_field":
+                _apply_custom_field(change)
+            elif ctype == "property_setter":
+                _apply_property_setter(change)
+            elif ctype == "server_script":
+                _apply_server_script(change)
+            elif ctype == "client_script":
+                _apply_client_script(change)
             else:
                 raise ValueError("Unknown change type: {}".format(ctype))
             applied.append(change)
 
         return {"status": "applied", "changes": applied}
-    except Exception:
-        # Auto-rollback on failure
-        rollback_app(app_name)
-        frappe.throw(_("Changes caused an error; rolled back to last snapshot."))
+    except Exception as e:
+        # Auto-rollback on failure (only for file-based changes in non-core apps)
+        if app_name not in ("frappe", "erpnext"):
+            rollback_app(app_name)
+        frappe.throw(_("Changes caused an error: {0}").format(str(e)))
+
+
+@frappe.whitelist()
+def preview_changes(app_name, changes):
+    """Preview changes without applying them. Returns a diff-like view."""
+    if isinstance(changes, str):
+        changes = json.loads(changes)
+
+    preview = []
+    for change in changes:
+        ctype = change.get("type")
+        rel = change.get("relative_path")
+        item = {"type": ctype, "relative_path": rel, "preview": ""}
+
+        if ctype == "write":
+            file_path = resolve_app_path(app_name, *rel.strip("/").split("/"))
+            existing = safe_read(file_path) or ""
+            if existing:
+                item["preview"] = "--- existing\n+++ new\n" + _simple_diff(existing, change["content"])
+            else:
+                item["preview"] = "+++ new file\n" + change["content"]
+        elif ctype == "inject_method":
+            item["preview"] = "Inject method into class '{}' in {}".format(change["class_name"], rel)
+        elif ctype == "update_json":
+            item["preview"] = "Update JSON: {}".format(json.dumps(change["updates"], indent=2))
+        elif ctype == "create_doctype":
+            item["preview"] = "Create DocType: {}".format(change.get("definition", {}).get("name", "unknown"))
+        elif ctype == "sync_doctype":
+            item["preview"] = "Sync DocType from JSON: {}".format(rel)
+        elif ctype == "run_bench":
+            item["preview"] = "Run bench command: {}".format(change["command"])
+        elif ctype == "custom_field":
+            item["preview"] = "Add custom field '{}' to DocType '{}'".format(
+                change.get("field", {}).get("fieldname", "unknown"),
+                change.get("doctype", "unknown")
+            )
+        elif ctype == "property_setter":
+            item["preview"] = "Set property '{}' = '{}' on '{}.{}'".format(
+                change.get("property"),
+                change.get("value"),
+                change.get("doctype"),
+                change.get("fieldname", "_doc")
+            )
+        elif ctype == "server_script":
+            item["preview"] = "Server Script '{}': {} event on '{}'".format(
+                change.get("name"),
+                change.get("event"),
+                change.get("doctype")
+            )
+        elif ctype == "client_script":
+            item["preview"] = "Client Script '{}' for '{}'".format(
+                change.get("name"),
+                change.get("dt") or change.get("doctype")
+            )
+
+        preview.append(item)
+
+    return {"status": "preview", "preview": preview}
+
+
+def _simple_diff(old, new):
+    """Generate a simple line-based diff."""
+    old_lines = old.splitlines()
+    new_lines = new.splitlines()
+    result = []
+    max_len = max(len(old_lines), len(new_lines))
+    for i in range(max_len):
+        if i < len(old_lines) and i < len(new_lines):
+            if old_lines[i] != new_lines[i]:
+                result.append("- " + old_lines[i])
+                result.append("+ " + new_lines[i])
+            else:
+                result.append("  " + old_lines[i])
+        elif i < len(old_lines):
+            result.append("- " + old_lines[i])
+        else:
+            result.append("+ " + new_lines[i])
+    return "\n".join(result)
+
+
+# ---------------------------------------------------------------------------
+# Customization helpers (for core apps like frappe/erpnext)
+# ---------------------------------------------------------------------------
+
+def _apply_custom_field(change):
+    """Add a custom field to an existing DocType."""
+    doctype = change.get("doctype")
+    field = change.get("field") or change.get("definition")
+    if not doctype or not field:
+        raise ValueError("custom_field requires 'doctype' and 'field'")
+
+    fieldname = field.get("fieldname")
+    if fieldname:
+        # Check if field already exists as a custom field
+        existing = frappe.db.get_value("Custom Field", {"dt": doctype, "fieldname": fieldname}, "name")
+        if existing:
+            # Update existing custom field instead of creating
+            doc = frappe.get_doc("Custom Field", existing)
+            for key, value in field.items():
+                if hasattr(doc, key) and key not in ("name", "doctype"):
+                    setattr(doc, key, value)
+            doc.save(ignore_permissions=True)
+            frappe.db.commit()
+            return
+
+    # Create new custom field directly
+    doc = frappe.new_doc("Custom Field")
+    doc.dt = doctype
+    for key, value in field.items():
+        if hasattr(doc, key):
+            setattr(doc, key, value)
+    doc.insert(ignore_permissions=True)
+    frappe.db.commit()
+
+
+def _apply_property_setter(change):
+    """Change a property of an existing DocType or field."""
+    from frappe.custom.doctype.property_setter.property_setter import make_property_setter
+    doctype = change.get("doctype")
+    fieldname = change.get("fieldname")
+    property_name = change.get("property")
+    value = change.get("value")
+    property_type = change.get("property_type", "Data")
+    if not doctype or not property_name or value is None:
+        raise ValueError("property_setter requires 'doctype', 'property', and 'value'")
+
+    # Check if property setter already exists
+    existing = frappe.db.get_value(
+        "Property Setter",
+        {"doc_type": doctype, "field_name": fieldname or "", "property": property_name},
+        "name"
+    )
+    if existing:
+        # Update existing property setter
+        doc = frappe.get_doc("Property Setter", existing)
+        doc.value = value
+        doc.property_type = property_type
+        doc.save(ignore_permissions=True)
+        frappe.db.commit()
+        return
+
+    make_property_setter(doctype, fieldname, property_name, value, property_type)
+    frappe.db.commit()
+
+
+def _apply_server_script(change):
+    """Create or update a Server Script."""
+    name = change.get("name")
+    script_type = change.get("script_type", "DocType Event")
+    doctype = change.get("doctype")
+    event = change.get("event", "before_insert")
+    script = change.get("script")
+    enabled = change.get("enabled", 1)
+
+    if not name or not script:
+        raise ValueError("server_script requires 'name' and 'script'")
+
+    if frappe.db.exists("Server Script", name):
+        doc = frappe.get_doc("Server Script", name)
+    else:
+        doc = frappe.new_doc("Server Script")
+        doc.name = name
+
+    doc.script_type = script_type
+    doc.doctype_event = doctype if script_type == "DocType Event" else None
+    doc.event = event if script_type == "DocType Event" else None
+    doc.script = script
+    doc.enabled = enabled
+    doc.save(ignore_permissions=True)
+    frappe.db.commit()
+
+
+def _apply_client_script(change):
+    """Create or update a Client Script."""
+    name = change.get("name")
+    dt = change.get("dt") or change.get("doctype")
+    script = change.get("script")
+    enabled = change.get("enabled", 1)
+    view = change.get("view", "Form")
+
+    if not name or not dt or not script:
+        raise ValueError("client_script requires 'name', 'dt' (doctype), and 'script'")
+
+    if frappe.db.exists("Client Script", name):
+        doc = frappe.get_doc("Client Script", name)
+    else:
+        doc = frappe.new_doc("Client Script")
+        doc.name = name
+
+    doc.dt = dt
+    doc.script = script
+    doc.enabled = enabled
+    doc.view = view
+    doc.save(ignore_permissions=True)
+    frappe.db.commit()
 
 
 # ---------------------------------------------------------------------------
