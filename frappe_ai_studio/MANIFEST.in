@@ -1,0 +1,14 @@
+include MANIFEST.in
+include requirements.txt
+include *.json
+include *.md
+recursive-include frappe_ai_studio *.csv
+recursive-include frappe_ai_studio *.html
+recursive-include frappe_ai_studio *.js
+recursive-include frappe_ai_studio *.json
+recursive-include frappe_ai_studio *.md
+recursive-include frappe_ai_studio *.py
+recursive-include frappe_ai_studio *.css
+recursive-include frappe_ai_studio *.png
+recursive-include frappe_ai_studio *.svg
+recursive-include frappe_ai_studio/public *

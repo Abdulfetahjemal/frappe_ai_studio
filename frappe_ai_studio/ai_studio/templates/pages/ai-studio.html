@@ -1,0 +1,11 @@
+{% extends "templates/web.html" %}
+
+{% block title %}{{ _("AI Studio") }}{% endblock %}
+
+{% block page_content %}
+<div id="ai-studio-app"></div>
+{% endblock %}
+
+{% block script %}
+<script type="module" src="/assets/frappe_ai_studio/js/ai_studio_page.js"></script>
+{% endblock %}

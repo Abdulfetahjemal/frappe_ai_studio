@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyflakes
+
+      - name: Run unit tests
+        run: |
+          cd frappe_ai_studio
+          python -m unittest discover -s frappe_ai_studio/tests -p "test_*.py" -v
+
+      - name: Check Python syntax
+        run: |
+          python -m py_compile frappe_ai_studio/frappe_ai_studio/*.py
+          python -m py_compile frappe_ai_studio/hooks.py
+          python -m py_compile frappe_ai_studio/config/*.py
+
+      - name: Check JS syntax
+        run: |
+          if command -v node &> /dev/null; then
+            node --check frappe_ai_studio/public/js/ai_studio_page.js
+            node --check frappe_ai_studio/public/js/ai_studio_global.js
+          fi

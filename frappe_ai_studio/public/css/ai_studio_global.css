@@ -1,0 +1,37 @@
+/* AI Studio Global Command Palette Styles */
+
+.ai-studio-palette-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 9999;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 10vh;
+}
+
+.ai-studio-palette {
+    width: 640px;
+    max-width: 90vw;
+    background: var(--bg-color);
+    border-radius: 0.5rem;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
+    overflow: hidden;
+}
+
+.ai-studio-palette-input {
+    width: 100%;
+    padding: 1rem 1.25rem;
+    border: none;
+    outline: none;
+    font-size: 1rem;
+    background: var(--bg-color);
+    color: var(--text-color);
+}
+
+.ai-studio-palette-results {
+    max-height: 320px;
+    overflow-y: auto;
+    border-top: 1px solid var(--border-color);
+}

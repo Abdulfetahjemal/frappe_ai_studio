@@ -1,0 +1,107 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:prompt_name",
+ "creation": "2024-01-01 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "prompt_name",
+  "section_system",
+  "system_prompt",
+  "section_user",
+  "user_prompt",
+  "section_meta",
+  "target_app",
+  "provider",
+  "model",
+  "temperature"
+ ],
+ "fields": [
+  {
+   "fieldname": "prompt_name",
+   "fieldtype": "Data",
+   "label": "Prompt Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "section_system",
+   "fieldtype": "Section Break",
+   "label": "System"
+  },
+  {
+   "fieldname": "system_prompt",
+   "fieldtype": "Text Editor",
+   "label": "System Prompt"
+  },
+  {
+   "fieldname": "section_user",
+   "fieldtype": "Section Break",
+   "label": "User"
+  },
+  {
+   "fieldname": "user_prompt",
+   "fieldtype": "Text Editor",
+   "label": "User Prompt",
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_meta",
+   "fieldtype": "Section Break",
+   "label": "Meta"
+  },
+  {
+   "fieldname": "target_app",
+   "fieldtype": "Data",
+   "label": "Target App"
+  },
+  {
+   "fieldname": "provider",
+   "fieldtype": "Select",
+   "label": "Provider",
+   "options": "OpenAI\nAnthropic\nGoogle Gemini\nMoonshot AI (Kimi)\nDeepSeek\nGroq\nAzure OpenAI\nCohere\nMistral AI\nTogether AI\nPerplexity\nOpenRouter",
+   "default": "OpenAI"
+  },
+  {
+   "fieldname": "model",
+   "fieldtype": "Select",
+   "label": "Model",
+   "options": "gpt-4o\ngpt-4o-mini\ngpt-4-turbo\ngpt-4-turbo-preview\ngpt-4\ngpt-3.5-turbo\no1-preview\no1-mini\nclaude-3-5-sonnet-20241022\nclaude-3-5-sonnet-latest\nclaude-3-opus-20240229\nclaude-3-sonnet-20240229\nclaude-3-haiku-20240307\ngemini-1.5-pro\ngemini-1.5-pro-latest\ngemini-1.5-flash\ngemini-1.5-flash-latest\ngemini-1.0-pro\nkimi-moonshot-v1-8k\nkimi-moonshot-v1-32k\nkimi-moonshot-v1-128k\nkimi-k1.5\ndeepseek-chat\ndeepseek-chat-v2\ndeepseek-coder\ndeepseek-coder-v2\ngroq-llama-3.3-70b-versatile\ngroq-llama-3.1-70b-versatile\ngroq-llama-3.1-8b-instant\ngroq-mixtral-8x7b-32768\ngroq-gemma-2-9b-it\nazure-gpt-4o\nazure-gpt-4-turbo\ncohere-command-r\ncohere-command-r-plus\ncohere-aya-23\nmistral-large-latest\nmistral-medium-latest\nmistral-small-latest\nmistral-codestral-latest\ntogether-llama-3.3-70b\ntogether-qwen2.5-72b\ntogether-mixtral-8x22b\nperplexity-sonar\nperplexity-sonar-pro\nperplexity-sonar-reasoning\nopenrouter-anthropic-claude-3.5-sonnet\nopenrouter-meta-llama-3.3-70b\nopenrouter-google-gemini-1.5-pro",
+   "default": "gpt-4o"
+  },
+  {
+   "fieldname": "temperature",
+   "fieldtype": "Float",
+   "label": "Temperature",
+   "default": "0.2"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2024-01-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Frappe AI Studio",
+ "name": "AI Studio Prompt",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
