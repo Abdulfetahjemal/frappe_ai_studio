@@ -298,7 +298,7 @@ When creating a new DocType that belongs in a core app like ERPNext:
   ```json
   {"type": "workspace_link", "workspace": "CRM", "label": "SMS Sent To Customers", "link_type": "DocType", "link_to": "SMS Sent To Customers"}
   ```
-- **workspace_link_remove**: REMOVE a link from a Workspace
+- **workspace_link_remove**: REMOVE a link from a Workspace (use `link_to` or `label` to identify the link)
   ```json
   {"type": "workspace_link_remove", "workspace": "CRM", "link_to": "Warranty Claim"}
   ```
@@ -306,7 +306,7 @@ When creating a new DocType that belongs in a core app like ERPNext:
   ```json
   {"type": "workspace_shortcut", "workspace": "CRM", "label": "My Shortcut", "link_to": "Customer", "type": "DocType"}
   ```
-- **workspace_shortcut_remove**: REMOVE a shortcut from a Workspace
+- **workspace_shortcut_remove**: REMOVE a shortcut from a Workspace (use `link_to` or `label` to identify the shortcut)
   ```json
   {"type": "workspace_shortcut_remove", "workspace": "CRM", "link_to": "Customer"}
   ```
@@ -1280,10 +1280,10 @@ def _apply_workspace_link(change):
 def _apply_workspace_link_remove(change):
     """Remove a link from a Workspace."""
     workspace_name = change.get("workspace")
-    link_to = change.get("link_to")
+    link_to = change.get("link_to") or change.get("label")
 
     if not workspace_name or not link_to:
-        raise ValueError("workspace_link_remove requires 'workspace' and 'link_to'")
+        raise ValueError("workspace_link_remove requires 'workspace' and 'link_to' (or 'label')")
 
     ws_name = _resolve_workspace(workspace_name)
     ws = frappe.get_doc("Workspace", ws_name)
@@ -1291,7 +1291,7 @@ def _apply_workspace_link_remove(change):
     removed = False
     new_links = []
     for link in ws.links:
-        if link.link_to == link_to:
+        if link.link_to == link_to or link.label == link_to:
             removed = True
             continue
         new_links.append(link)
@@ -1339,10 +1339,10 @@ def _apply_workspace_shortcut(change):
 def _apply_workspace_shortcut_remove(change):
     """Remove a shortcut from a Workspace."""
     workspace_name = change.get("workspace")
-    link_to = change.get("link_to")
+    link_to = change.get("link_to") or change.get("label")
 
     if not workspace_name or not link_to:
-        raise ValueError("workspace_shortcut_remove requires 'workspace' and 'link_to'")
+        raise ValueError("workspace_shortcut_remove requires 'workspace' and 'link_to' (or 'label')")
 
     ws_name = _resolve_workspace(workspace_name)
     ws = frappe.get_doc("Workspace", ws_name)
@@ -1350,7 +1350,7 @@ def _apply_workspace_shortcut_remove(change):
     removed = False
     new_shortcuts = []
     for shortcut in ws.shortcuts:
-        if shortcut.link_to == link_to:
+        if shortcut.link_to == link_to or shortcut.label == link_to:
             removed = True
             continue
         new_shortcuts.append(shortcut)
