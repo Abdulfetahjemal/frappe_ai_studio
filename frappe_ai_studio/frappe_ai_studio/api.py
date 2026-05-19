@@ -231,6 +231,10 @@ When the user asks you to create or modify code, respond with a JSON payload wra
 - **create_doctype**: Create a new DocType from a JSON definition (writes JSON + syncs to DB).
 - **sync_doctype**: Sync an existing DocType JSON to the database.
 - **run_bench**: Run a bench command (migrate, restart, clear-cache, build).
+- **workspace_link**: Add a DocType link to a Workspace so users can find it in the sidebar.
+  ```json
+  {"type": "workspace_link", "workspace": "CRM", "label": "SMS Sent To Customers", "link_type": "DocType", "link_to": "SMS Sent To Customers"}
+  ```
 
 ## BEST PRACTICES
 1. Always use frappe.get_doc(), frappe.db.sql(), frappe.throw() following Frappe conventions
@@ -249,6 +253,14 @@ When creating DocTypes that use naming_series, ALWAYS check the existing_docType
 - Use UNIQUE naming series like "AST-" for "AI Studio Task", "ASTK-" for "AI Studio Task", or "AI-STUDIO-TASK-"
 - When in doubt, use the DocType name as prefix: "AI-STUDIO-TASK-.####"
 - The context includes a list of existing_docTypes - check it before creating new ones
+
+## CRITICAL: WORKSPACE LINKS
+After creating a new DocType, ALWAYS add it to a relevant Workspace so users can find it:
+- Use the `workspace_link` change type to add the DocType to an existing workspace
+- Choose the most relevant workspace (e.g., CRM for customer-related, Selling for sales, Stock for inventory)
+- If unsure, add to "Others" workspace
+- The workspace name is the workspace's title (e.g., "CRM", "Selling", "Stock", "Others")
+- Example: {"type": "workspace_link", "workspace": "CRM", "label": "SMS Sent To Customers", "link_type": "DocType", "link_to": "SMS Sent To Customers"}
 
 ## CRITICAL: CORE APP CUSTOMIZATION
 The context includes an "app_metadata" section that tells you if an app is a "core" app.
@@ -272,6 +284,10 @@ The context includes an "app_metadata" section that tells you if an app is a "co
 - **client_script**: Create a Client Script for UI behavior
   ```json
   {"type": "client_script", "name": "My Client Script", "dt": "Sales Invoice", "script": "frappe.ui.form.on('Sales Invoice', { refresh: function(frm) { ... } })"}
+  ```
+- **workspace_link**: Add a DocType link to a Workspace so users can find it in the sidebar.
+  ```json
+  {"type": "workspace_link", "workspace": "CRM", "label": "SMS Sent To Customers", "link_type": "DocType", "link_to": "SMS Sent To Customers"}
   ```
 
 ## CRITICAL: DOCTYPE NAMING RULE VALID VALUES
@@ -942,6 +958,8 @@ def apply_ai_changes(app_name, changes):
                 _apply_server_script(change)
             elif ctype == "client_script":
                 _apply_client_script(change)
+            elif ctype == "workspace_link":
+                _apply_workspace_link(change)
             else:
                 raise ValueError("Unknown change type: {}".format(ctype))
             applied.append(change)
@@ -1005,6 +1023,12 @@ def preview_changes(app_name, changes):
             item["preview"] = "Client Script '{}' for '{}'".format(
                 change.get("name"),
                 change.get("dt") or change.get("doctype")
+            )
+        elif ctype == "workspace_link":
+            item["preview"] = "Add link '{}' -> '{}' to Workspace '{}'".format(
+                change.get("label"),
+                change.get("link_to"),
+                change.get("workspace")
             )
 
         preview.append(item)
@@ -1146,6 +1170,57 @@ def _apply_client_script(change):
     doc.enabled = enabled
     doc.view = view
     doc.save(ignore_permissions=True)
+    frappe.db.commit()
+
+
+def _apply_workspace_link(change):
+    """Add a DocType link to a Workspace."""
+    workspace_name = change.get("workspace")
+    label = change.get("label")
+    link_type = change.get("link_type", "DocType")
+    link_to = change.get("link_to")
+
+    if not workspace_name or not label or not link_to:
+        raise ValueError("workspace_link requires 'workspace', 'label', and 'link_to'")
+
+    # Find the workspace - try by title first, then by name
+    ws_name = None
+    ws_list = frappe.get_all("Workspace", filters={"title": workspace_name}, fields=["name"])
+    if ws_list:
+        ws_name = ws_list[0].name
+    else:
+        ws_list = frappe.get_all("Workspace", filters={"name": workspace_name}, fields=["name"])
+        if ws_list:
+            ws_name = ws_list[0].name
+
+    if not ws_name:
+        # Try to find by name containing the workspace title
+        ws_list = frappe.get_all("Workspace", filters={"name": ["like", f"%{workspace_name}%"]}, fields=["name"])
+        if ws_list:
+            ws_name = ws_list[0].name
+
+    if not ws_name:
+        raise ValueError("Workspace '{}' not found".format(workspace_name))
+
+    ws = frappe.get_doc("Workspace", ws_name)
+
+    # Check if link already exists
+    for link in ws.links:
+        if link.link_to == link_to and link.link_type == link_type:
+            # Update existing link
+            link.label = label
+            ws.save(ignore_permissions=True)
+            frappe.db.commit()
+            return
+
+    # Add new link
+    ws.append("links", {
+        "type": "Link",
+        "label": label,
+        "link_type": link_type,
+        "link_to": link_to,
+    })
+    ws.save(ignore_permissions=True)
     frappe.db.commit()
 
 

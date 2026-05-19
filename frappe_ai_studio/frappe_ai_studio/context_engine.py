@@ -326,6 +326,15 @@ def get_site_context():
     }
 
 
+def get_workspaces():
+    """Return a list of available workspace names and titles."""
+    try:
+        workspaces = frappe.get_all("Workspace", fields=["name", "title", "module"], limit=50)
+        return [{"name": w.name, "title": w.title, "module": w.module} for w in workspaces]
+    except Exception:
+        return []
+
+
 def get_existing_doctypes():
     """Return a list of all existing DocType names in the system."""
     try:
@@ -377,6 +386,7 @@ def build_context(target_app=None):
         "bench_path": get_bench_path(),
         "site": get_site_context(),
         "existing_doctypes": get_existing_doctypes(),
+        "workspaces": get_workspaces(),
         "apps": {},
     }
 
