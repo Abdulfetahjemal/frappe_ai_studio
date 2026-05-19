@@ -438,15 +438,36 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
             system: '#fff3e0'
         };
 
+        // Format the text: render markdown code blocks, escape HTML otherwise
+        let formatted_text = this._format_message_text(text);
+
         const msg_el = $(`
             <div class="chat-bubble" style="margin-bottom:10px;padding:12px;border-radius:8px;background:${colors[role] || colors.system};">
                 <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;text-transform:uppercase;">${role} &middot; ${time}</div>
-                <pre style="margin:0;white-space:pre-wrap;word-break:break-word;font-family:inherit;">${frappe.utils.escape_html(text)}</pre>
+                <div class="chat-content" style="margin:0;white-space:pre-wrap;word-break:break-word;font-family:inherit;">${formatted_text}</div>
             </div>
         `).appendTo(this.chat_container);
 
         this.chat_container.scrollTop(this.chat_container[0].scrollHeight);
         this.chat_container.find('.chat-welcome').remove();
+    }
+
+    _format_message_text(text) {
+        // Escape HTML first
+        let escaped = frappe.utils.escape_html(text);
+        
+        // Render markdown code blocks: ```json ... ```
+        escaped = escaped.replace(/```(\w*)\n([\s\S]*?)\n```/g, function(match, lang, code) {
+            return '<pre style="background:#282c34;color:#abb2bf;padding:12px;border-radius:6px;overflow-x:auto;font-size:12px;margin:8px 0;"><code>' + code + '</code></pre>';
+        });
+        
+        // Render inline code: `code`
+        escaped = escaped.replace(/`([^`]+)`/g, '<code style="background:var(--gray-100);padding:2px 4px;border-radius:3px;font-size:12px;">$1</code>');
+        
+        // Convert newlines to <br> for non-pre text
+        escaped = escaped.replace(/\n/g, '<br>');
+        
+        return escaped;
     }
 
     clear_chat() {

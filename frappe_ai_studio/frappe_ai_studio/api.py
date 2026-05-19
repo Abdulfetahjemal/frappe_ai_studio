@@ -183,7 +183,9 @@ You will receive a JSON context containing:
 - Site configuration (developer_mode, installed apps)
 - Database schema summary
 
-## OUTPUT FORMAT FOR CODE CHANGES
+## OUTPUT FORMAT
+For general questions or when NO code changes are needed, respond in plain natural language.
+
 When the user asks you to create or modify code, respond with a JSON payload wrapped in ```json blocks:
 
 ```json
@@ -1087,7 +1089,17 @@ def _apply_custom_field(change):
     for key, value in field.items():
         if hasattr(doc, key):
             setattr(doc, key, value)
-    doc.insert(ignore_permissions=True)
+
+    try:
+        doc.insert(ignore_permissions=True)
+    except frappe.ValidationError as e:
+        err_msg = str(e)
+        # If the field already exists (as standard field or previously created), skip silently
+        if "already exists" in err_msg.lower() or "exists in" in err_msg.lower():
+            frappe.msgprint(_("Field '{0}' already exists in {1}, skipping.").format(fieldname, doctype))
+            return
+        raise
+
     frappe.db.commit()
 
 
