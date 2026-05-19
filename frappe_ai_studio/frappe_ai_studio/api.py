@@ -256,18 +256,18 @@ When creating DocTypes that use naming_series, ALWAYS check the existing_docType
 - When in doubt, use the DocType name as prefix: "AI-STUDIO-TASK-.####"
 - The context includes a list of existing_docTypes - check it before creating new ones
 
-## CRITICAL: WORKSPACE LINKS
-After creating a new DocType, ALWAYS add it to a relevant Workspace so users can find it:
-- Use the `workspace_link` change type to add the DocType to an existing workspace
-- Choose the most relevant workspace (e.g., CRM for customer-related, Selling for sales, Stock for inventory)
-- If unsure, add to "Others" workspace
+## CRITICAL: WORKSPACE CUSTOMIZATION
+You have FULL control over Workspaces. You can add, update, and REMOVE links, shortcuts, and cards.
+- Use `workspace_link` to ADD or UPDATE a link in a workspace
+- Use `workspace_link_remove` to REMOVE a link from a workspace
+- Use `workspace_shortcut` to ADD or UPDATE a shortcut in a workspace
+- Use `workspace_shortcut_remove` to REMOVE a shortcut from a workspace
 - The workspace name is the workspace's title (e.g., "CRM", "Selling", "Stock", "Others")
-- Example: {"type": "workspace_link", "workspace": "CRM", "label": "SMS Sent To Customers", "link_type": "DocType", "link_to": "SMS Sent To Customers"}
 
 ## CRITICAL: CORE APP CUSTOMIZATION
 The context includes an "app_metadata" section that tells you if an app is a "core" app.
 - **Core apps** (frappe, erpnext) should NOT be modified directly via file writes (no `write`, `inject_method`, `update_json`).
-- For core apps, use ONLY these customization change types: `custom_field`, `property_setter`, `server_script`, `client_script`, `workspace_link`
+- For core apps, use these customization change types: `custom_field`, `property_setter`, `server_script`, `client_script`, `workspace_link`, `workspace_link_remove`, `workspace_shortcut`, `workspace_shortcut_remove`
 - These customizations are stored in the database and survive updates.
 
 ## CRITICAL: CREATING DOCTYPES IN CORE APPS
@@ -294,9 +294,21 @@ When creating a new DocType that belongs in a core app like ERPNext:
   ```json
   {"type": "client_script", "name": "My Client Script", "dt": "Sales Invoice", "script": "frappe.ui.form.on('Sales Invoice', { refresh: function(frm) { ... } })"}
   ```
-- **workspace_link**: Add a DocType link to a Workspace so users can find it in the sidebar.
+- **workspace_link**: ADD or UPDATE a link in a Workspace
   ```json
   {"type": "workspace_link", "workspace": "CRM", "label": "SMS Sent To Customers", "link_type": "DocType", "link_to": "SMS Sent To Customers"}
+  ```
+- **workspace_link_remove**: REMOVE a link from a Workspace
+  ```json
+  {"type": "workspace_link_remove", "workspace": "CRM", "link_to": "Warranty Claim"}
+  ```
+- **workspace_shortcut**: ADD or UPDATE a shortcut in a Workspace
+  ```json
+  {"type": "workspace_shortcut", "workspace": "CRM", "label": "My Shortcut", "link_to": "Customer", "type": "DocType"}
+  ```
+- **workspace_shortcut_remove**: REMOVE a shortcut from a Workspace
+  ```json
+  {"type": "workspace_shortcut_remove", "workspace": "CRM", "link_to": "Customer"}
   ```
 
 ## CRITICAL: DOCTYPE NAMING RULE VALID VALUES
@@ -975,6 +987,12 @@ def apply_ai_changes(app_name, changes):
                 _apply_client_script(change)
             elif ctype == "workspace_link":
                 _apply_workspace_link(change)
+            elif ctype == "workspace_link_remove":
+                _apply_workspace_link_remove(change)
+            elif ctype == "workspace_shortcut":
+                _apply_workspace_shortcut(change)
+            elif ctype == "workspace_shortcut_remove":
+                _apply_workspace_shortcut_remove(change)
             else:
                 raise ValueError("Unknown change type: {}".format(ctype))
             applied.append(change)
@@ -1042,6 +1060,22 @@ def preview_changes(app_name, changes):
         elif ctype == "workspace_link":
             item["preview"] = "Add link '{}' -> '{}' to Workspace '{}'".format(
                 change.get("label"),
+                change.get("link_to"),
+                change.get("workspace")
+            )
+        elif ctype == "workspace_link_remove":
+            item["preview"] = "REMOVE link '{}' from Workspace '{}'".format(
+                change.get("link_to"),
+                change.get("workspace")
+            )
+        elif ctype == "workspace_shortcut":
+            item["preview"] = "Add shortcut '{}' -> '{}' to Workspace '{}'".format(
+                change.get("label"),
+                change.get("link_to"),
+                change.get("workspace")
+            )
+        elif ctype == "workspace_shortcut_remove":
+            item["preview"] = "REMOVE shortcut '{}' from Workspace '{}'".format(
                 change.get("link_to"),
                 change.get("workspace")
             )
@@ -1198,8 +1232,22 @@ def _apply_client_script(change):
     frappe.db.commit()
 
 
+def _resolve_workspace(workspace_name):
+    """Find a workspace by title or name."""
+    ws_list = frappe.get_all("Workspace", filters={"title": workspace_name}, fields=["name"])
+    if ws_list:
+        return ws_list[0].name
+    ws_list = frappe.get_all("Workspace", filters={"name": workspace_name}, fields=["name"])
+    if ws_list:
+        return ws_list[0].name
+    ws_list = frappe.get_all("Workspace", filters={"name": ["like", f"%{workspace_name}%"]}, fields=["name"])
+    if ws_list:
+        return ws_list[0].name
+    raise ValueError("Workspace '{}' not found".format(workspace_name))
+
+
 def _apply_workspace_link(change):
-    """Add a DocType link to a Workspace."""
+    """Add or update a DocType link in a Workspace."""
     workspace_name = change.get("workspace")
     label = change.get("label")
     link_type = change.get("link_type", "DocType")
@@ -1208,37 +1256,17 @@ def _apply_workspace_link(change):
     if not workspace_name or not label or not link_to:
         raise ValueError("workspace_link requires 'workspace', 'label', and 'link_to'")
 
-    # Find the workspace - try by title first, then by name
-    ws_name = None
-    ws_list = frappe.get_all("Workspace", filters={"title": workspace_name}, fields=["name"])
-    if ws_list:
-        ws_name = ws_list[0].name
-    else:
-        ws_list = frappe.get_all("Workspace", filters={"name": workspace_name}, fields=["name"])
-        if ws_list:
-            ws_name = ws_list[0].name
-
-    if not ws_name:
-        # Try to find by name containing the workspace title
-        ws_list = frappe.get_all("Workspace", filters={"name": ["like", f"%{workspace_name}%"]}, fields=["name"])
-        if ws_list:
-            ws_name = ws_list[0].name
-
-    if not ws_name:
-        raise ValueError("Workspace '{}' not found".format(workspace_name))
-
+    ws_name = _resolve_workspace(workspace_name)
     ws = frappe.get_doc("Workspace", ws_name)
 
     # Check if link already exists
     for link in ws.links:
         if link.link_to == link_to and link.link_type == link_type:
-            # Update existing link
             link.label = label
             ws.save(ignore_permissions=True)
             frappe.db.commit()
             return
 
-    # Add new link
     ws.append("links", {
         "type": "Link",
         "label": label,
@@ -1247,6 +1275,94 @@ def _apply_workspace_link(change):
     })
     ws.save(ignore_permissions=True)
     frappe.db.commit()
+
+
+def _apply_workspace_link_remove(change):
+    """Remove a link from a Workspace."""
+    workspace_name = change.get("workspace")
+    link_to = change.get("link_to")
+
+    if not workspace_name or not link_to:
+        raise ValueError("workspace_link_remove requires 'workspace' and 'link_to'")
+
+    ws_name = _resolve_workspace(workspace_name)
+    ws = frappe.get_doc("Workspace", ws_name)
+
+    removed = False
+    new_links = []
+    for link in ws.links:
+        if link.link_to == link_to:
+            removed = True
+            continue
+        new_links.append(link)
+
+    if not removed:
+        frappe.msgprint(_("Link '{}' not found in workspace '{}' — nothing to remove.").format(link_to, workspace_name))
+        return
+
+    ws.links = new_links
+    ws.save(ignore_permissions=True)
+    frappe.db.commit()
+    frappe.msgprint(_("Removed link '{}' from workspace '{}'.").format(link_to, workspace_name))
+
+
+def _apply_workspace_shortcut(change):
+    """Add or update a shortcut in a Workspace."""
+    workspace_name = change.get("workspace")
+    label = change.get("label")
+    link_to = change.get("link_to")
+    shortcut_type = change.get("type", "DocType")
+
+    if not workspace_name or not label or not link_to:
+        raise ValueError("workspace_shortcut requires 'workspace', 'label', and 'link_to'")
+
+    ws_name = _resolve_workspace(workspace_name)
+    ws = frappe.get_doc("Workspace", ws_name)
+
+    for shortcut in ws.shortcuts:
+        if shortcut.link_to == link_to:
+            shortcut.label = label
+            shortcut.type = shortcut_type
+            ws.save(ignore_permissions=True)
+            frappe.db.commit()
+            return
+
+    ws.append("shortcuts", {
+        "label": label,
+        "type": shortcut_type,
+        "link_to": link_to,
+    })
+    ws.save(ignore_permissions=True)
+    frappe.db.commit()
+
+
+def _apply_workspace_shortcut_remove(change):
+    """Remove a shortcut from a Workspace."""
+    workspace_name = change.get("workspace")
+    link_to = change.get("link_to")
+
+    if not workspace_name or not link_to:
+        raise ValueError("workspace_shortcut_remove requires 'workspace' and 'link_to'")
+
+    ws_name = _resolve_workspace(workspace_name)
+    ws = frappe.get_doc("Workspace", ws_name)
+
+    removed = False
+    new_shortcuts = []
+    for shortcut in ws.shortcuts:
+        if shortcut.link_to == link_to:
+            removed = True
+            continue
+        new_shortcuts.append(shortcut)
+
+    if not removed:
+        frappe.msgprint(_("Shortcut '{}' not found in workspace '{}' — nothing to remove.").format(link_to, workspace_name))
+        return
+
+    ws.shortcuts = new_shortcuts
+    ws.save(ignore_permissions=True)
+    frappe.db.commit()
+    frappe.msgprint(_("Removed shortcut '{}' from workspace '{}'.").format(link_to, workspace_name))
 
 
 # ---------------------------------------------------------------------------
