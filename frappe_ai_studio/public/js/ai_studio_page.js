@@ -494,13 +494,13 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
         this.append_message('user', text);
         this.prompt_input.val('');
         this.loading = true;
-        this.send_btn.prop('disabled', true).text('Thinking...');
+        this.send_btn.prop('disabled', true).text('Queueing...');
 
         try {
+            // Use the async pipeline for production
             const r = await frappe.call({
-                method: 'frappe_ai_studio.frappe_ai_studio.api.execute_prompt',
+                method: 'frappe_ai_studio.frappe_ai_studio.api.execute_prompt_async',
                 args: {
-                    prompt_name: '__direct__',
                     user_prompt: text,
                     provider: this.current_provider,
                     model: this.current_model,
@@ -509,30 +509,157 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
                     conversation_history: JSON.stringify(this.conversation_history)
                 },
             });
-            if (r.message && r.message.status === 'success') {
-                this.append_message('assistant', r.message.response);
-                this.apply_btn.prop('disabled', false);
-                this.preview_btn.show();
-                
-                // Update conversation history
-                this.conversation_history.push({role: 'user', content: text});
-                this.conversation_history.push({role: 'assistant', content: r.message.response});
-                
-                // Limit history to last 10 exchanges to manage token usage
-                if (this.conversation_history.length > 20) {
-                    this.conversation_history = this.conversation_history.slice(-20);
-                }
-                
-                // Try to extract JSON payload for the code editor
-                this.try_extract_payload(r.message.response);
+
+            if (r.message && r.message.status === 'queued') {
+                const taskId = r.message.task_id;
+                this.append_message('system', 'Task queued: ' + taskId + '. Processing in background...');
+                this.track_task(taskId, text);
             } else {
                 this.append_message('system', 'Unexpected response from agent.');
+                this.loading = false;
+                this.send_btn.prop('disabled', false).text('Send');
             }
         } catch (err) {
             this.append_message('system', 'Error: ' + (err.message || 'Request failed'));
-        } finally {
             this.loading = false;
             this.send_btn.prop('disabled', false).text('Send');
+        }
+    }
+
+    track_task(taskId, originalPrompt) {
+        // Subscribe to realtime events
+        frappe.realtime.on('ai_generation_progress', (data) => {
+            if (data.task_id !== taskId) return;
+            this.update_task_status(data);
+        });
+
+        // Fallback polling every 3 seconds
+        this.pollInterval = setInterval(() => this.poll_task_status(taskId, originalPrompt), 3000);
+    }
+
+    async poll_task_status(taskId, originalPrompt) {
+        try {
+            const r = await frappe.call({
+                method: 'frappe_ai_studio.frappe_ai_studio.api.get_task_status',
+                args: { task_name: taskId }
+            });
+            if (r.message) {
+                this.update_task_status(r.message, originalPrompt);
+            }
+        } catch (err) {
+            console.log('Poll error:', err);
+        }
+    }
+
+    update_task_status(data, originalPrompt) {
+        const status = data.status;
+        const percent = data.progress_percent || 0;
+        const stage = data.current_stage || status;
+
+        // Update the send button to show progress
+        this.send_btn.text(stage + ' (' + percent + '%)');
+
+        if (status === 'Completed') {
+            this.loading = false;
+            this.send_btn.prop('disabled', false).text('Send');
+            if (this.pollInterval) {
+                clearInterval(this.pollInterval);
+                this.pollInterval = null;
+            }
+
+            // Show AI response
+            if (data.ai_response) {
+                this.append_message('assistant', data.ai_response);
+                this.apply_btn.prop('disabled', false);
+                this.preview_btn.show();
+                this.try_extract_payload(data.ai_response);
+
+                // Store task info for approve/reject
+                this.current_task = data;
+
+                // Show approve/reject buttons
+                this.show_approve_reject(data.task_id);
+            }
+
+            // Update conversation history
+            if (originalPrompt) {
+                this.conversation_history.push({role: 'user', content: originalPrompt});
+                this.conversation_history.push({role: 'assistant', content: data.ai_response || ''});
+                if (this.conversation_history.length > 20) {
+                    this.conversation_history = this.conversation_history.slice(-20);
+                }
+            }
+        } else if (status === 'Failed') {
+            this.loading = false;
+            this.send_btn.prop('disabled', false).text('Send');
+            if (this.pollInterval) {
+                clearInterval(this.pollInterval);
+                this.pollInterval = null;
+            }
+            this.append_message('system', 'Task failed: ' + (data.error_trace || 'Unknown error'));
+        } else if (status === 'Rolled Back') {
+            this.loading = false;
+            this.send_btn.prop('disabled', false).text('Send');
+            if (this.pollInterval) {
+                clearInterval(this.pollInterval);
+                this.pollInterval = null;
+            }
+            this.append_message('system', 'Task was rolled back by user.');
+        }
+    }
+
+    show_approve_reject(taskId) {
+        // Remove any existing approve/reject buttons
+        this.wrapper.find('.ai-studio-action-bar').remove();
+
+        const actionBar = $(`
+            <div class="ai-studio-action-bar" style="display:flex;gap:10px;margin-top:10px;padding:10px;background:var(--gray-100);border-radius:8px;">
+                <span style="flex:1;font-size:12px;color:var(--text-muted);">Changes are staged. Review before deploying.</span>
+                <button class="btn btn-sm btn-success btn-approve" data-task="${taskId}">Deploy</button>
+                <button class="btn btn-sm btn-danger btn-reject" data-task="${taskId}">Rollback</button>
+            </div>
+        `).insertAfter(this.chat_container);
+
+        actionBar.find('.btn-approve').on('click', (e) => {
+            const tid = $(e.currentTarget).data('task');
+            this.approve_task(tid);
+            actionBar.remove();
+        });
+
+        actionBar.find('.btn-reject').on('click', (e) => {
+            const tid = $(e.currentTarget).data('task');
+            this.reject_task(tid);
+            actionBar.remove();
+        });
+    }
+
+    async approve_task(taskId) {
+        try {
+            const r = await frappe.call({
+                method: 'frappe_ai_studio.frappe_ai_studio.api.approve_task',
+                args: { task_name: taskId }
+            });
+            if (r.message && r.message.status === 'deployed') {
+                frappe.show_alert('Changes deployed successfully.');
+                this.append_message('system', 'Changes deployed.');
+            }
+        } catch (err) {
+            this.append_message('system', 'Deploy failed: ' + (err.message || 'Error'));
+        }
+    }
+
+    async reject_task(taskId) {
+        try {
+            const r = await frappe.call({
+                method: 'frappe_ai_studio.frappe_ai_studio.api.reject_task',
+                args: { task_name: taskId }
+            });
+            if (r.message && r.message.status === 'rolled_back') {
+                frappe.show_alert('Changes rolled back.');
+                this.append_message('system', 'Changes rolled back.');
+            }
+        } catch (err) {
+            this.append_message('system', 'Rollback failed: ' + (err.message || 'Error'));
         }
     }
 
@@ -606,6 +733,12 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
     }
 
     async apply_changes() {
+        // If we have a current_task from the async pipeline, use that
+        if (this.current_task && this.current_task.task_id) {
+            this.approve_task(this.current_task.task_id);
+            return;
+        }
+
         const last = this.messages[this.messages.length - 1];
         if (!last || last.role !== 'assistant') {
             frappe.show_alert('No AI response to apply.');

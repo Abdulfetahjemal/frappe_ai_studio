@@ -24,6 +24,19 @@ from frappe_ai_studio.frappe_ai_studio.writer import (
     update_json_file,
     validate_python_syntax,
 )
+from frappe_ai_studio.frappe_ai_studio.ast_sanitizer import validate_code_security
+from frappe_ai_studio.frappe_ai_studio.customization_bridge import (
+    safe_custom_field,
+    safe_property_setter,
+    safe_server_script,
+    safe_client_script,
+    safe_hooks_injection,
+    safe_workspace_link,
+    safe_workspace_link_remove,
+    safe_workspace_shortcut,
+    safe_workspace_shortcut_remove,
+)
+from frappe_ai_studio.frappe_ai_studio.transaction_guard import dry_run
 
 # ---------------------------------------------------------------------------
 # Provider / model registry
@@ -330,6 +343,20 @@ If using autoname like "AI-STUDIO-TASK-.####", set naming_rule to: "By \"Naming 
 - Git snapshots are taken automatically before changes
 - Changes are rolled back automatically if any step fails
 - Python syntax is validated before writing .py files
+- All Python code is scanned by an AST-based security validator (import/function whitelisting)
+- Database changes run through a dry-run transaction before deployment
+
+## ASYNC PIPELINE
+When the user submits a request, it is processed asynchronously:
+1. **Pending** — task queued
+2. **In Progress** — LLM call in progress
+3. **Linting** — AST security scan + change validation
+4. **Testing** — dry-run in a database savepoint (rolled back automatically)
+5. **Completed** — changes staged, waiting for user approval
+6. **Failed** — pipeline halted, error trace available
+7. **Rolled Back** — user rejected the changes
+
+The user must explicitly approve (Deploy) or reject (Rollback) the changes.
 """
 
 
@@ -875,7 +902,11 @@ def run_bench_command(command):
 
 @frappe.whitelist()
 def execute_prompt(prompt_name, user_prompt=None, target_app=None, provider=None, model=None, temperature=None, conversation_history=None):
-    """Execute a stored prompt against the LLM and return the response."""
+    """Execute a stored prompt against the LLM and return the response.
+
+    This is the SYNCHRONOUS version. For production use, prefer
+    execute_prompt_async() which runs the full pipeline (lint, dry-run, approve).
+    """
     if prompt_name == "__direct__":
         system = DEFAULT_SYSTEM_PROMPT
         user = user_prompt or ""
@@ -942,6 +973,26 @@ def execute_prompt(prompt_name, user_prompt=None, target_app=None, provider=None
 
 
 @frappe.whitelist()
+def execute_prompt_async(user_prompt, target_app=None, provider=None, model=None, temperature=None, conversation_history=None):
+    """Enqueue an AI generation task and return the task ID immediately.
+
+    The frontend should listen for 'ai_generation_progress' realtime events
+    or poll get_generation_task_status().
+    """
+    from frappe_ai_studio.frappe_ai_studio.agent_orchestrator import enqueue_generation_task
+
+    task_name = enqueue_generation_task(
+        user_prompt=user_prompt,
+        target_app=target_app,
+        provider=provider,
+        model=model,
+        temperature=temperature,
+        conversation_history=conversation_history,
+    )
+    return {"status": "queued", "task_id": task_name}
+
+
+@frappe.whitelist()
 def apply_ai_changes(app_name, changes):
     """Apply a list of AI-generated file changes atomically with snapshot + rollback."""
     if isinstance(changes, str):
@@ -1003,6 +1054,23 @@ def apply_ai_changes(app_name, changes):
         if needs_snapshot and not is_core_app:
             rollback_app(app_name)
         frappe.throw(_("Changes caused an error: {0}").format(str(e)))
+
+
+@frappe.whitelist()
+def apply_ai_changes_dry_run(app_name, changes):
+    """Apply changes inside a DB savepoint that is automatically rolled back.
+
+    Returns the same result as apply_ai_changes but without persisting anything.
+    """
+    if isinstance(changes, str):
+        changes = json.loads(changes)
+
+    from frappe_ai_studio.frappe_ai_studio.transaction_guard import DryRunContext
+
+    with DryRunContext():
+        result = apply_ai_changes(app_name, changes)
+        # Force a copy so it's available after rollback
+        return {"status": "dry_run", "result": result}
 
 
 @frappe.whitelist()
@@ -1363,6 +1431,42 @@ def _apply_workspace_shortcut_remove(change):
     ws.save(ignore_permissions=True)
     frappe.db.commit()
     frappe.msgprint(_("Removed shortcut '{}' from workspace '{}'.").format(link_to, workspace_name))
+
+
+# ---------------------------------------------------------------------------
+# Async task delegation (proxies to agent_orchestrator)
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist()
+def approve_task(task_name):
+    """Approve and deploy a completed AI Generation Task."""
+    from frappe_ai_studio.frappe_ai_studio.agent_orchestrator import approve_and_deploy
+    return approve_and_deploy(task_name)
+
+
+@frappe.whitelist()
+def reject_task(task_name):
+    """Reject and roll back a completed AI Generation Task."""
+    from frappe_ai_studio.frappe_ai_studio.agent_orchestrator import reject_and_rollback
+    return reject_and_rollback(task_name)
+
+
+@frappe.whitelist()
+def get_task_status(task_name):
+    """Get the current status of an AI Generation Task."""
+    from frappe_ai_studio.frappe_ai_studio.agent_orchestrator import get_generation_task_status
+    return get_generation_task_status(task_name)
+
+
+# ---------------------------------------------------------------------------
+# Security / validation helpers
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist()
+def validate_code(code):
+    """Run AST security validation on Python code. Returns {ok, message}."""
+    ok, msg = validate_code_security(code)
+    return {"ok": ok, "message": msg}
 
 
 # ---------------------------------------------------------------------------
