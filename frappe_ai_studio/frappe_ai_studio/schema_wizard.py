@@ -141,12 +141,24 @@ def create_doctype(app_name, definition):
                     frappe.msgprint(_("Naming series auto-adjusted from '{0}' to '{1}' to avoid conflicts.").format(
                         suggested_prefix, unique_prefix))
 
-    # 1. Write JSON
+    # 1. Determine the correct module path
+    module_name = definition.get("module", app_name)
     app_path = frappe.get_app_path(app_name)
-    dt_folder = os.path.join(app_path, "doctype", doctype_name)
+    
+    # Frappe stores doctypes under app/module/doctype/name/
+    # If module is the same as app_name, use app/doctype/name/
+    if module_name and module_name != app_name:
+        module_path = os.path.join(app_path, frappe.scrub(module_name))
+        if os.path.exists(module_path):
+            dt_folder = os.path.join(module_path, "doctype", frappe.scrub(doctype_name))
+        else:
+            dt_folder = os.path.join(app_path, "doctype", frappe.scrub(doctype_name))
+    else:
+        dt_folder = os.path.join(app_path, "doctype", frappe.scrub(doctype_name))
+    
     os.makedirs(dt_folder, exist_ok=True)
 
-    json_path = os.path.join(dt_folder, f"{doctype_name}.json")
+    json_path = os.path.join(dt_folder, f"{frappe.scrub(doctype_name)}.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(definition, f, indent=1, ensure_ascii=False, default=str)
 
@@ -155,6 +167,7 @@ def create_doctype(app_name, definition):
         open(init_path, "a").close()
 
     # 2. Sync to DB
-    sync_doctype_from_json(app_name, f"doctype/{doctype_name}/{doctype_name}.json")
+    rel_path = os.path.relpath(json_path, app_path)
+    sync_doctype_from_json(app_name, rel_path)
 
     return {"doctype": doctype_name, "json_path": json_path, "status": "created"}

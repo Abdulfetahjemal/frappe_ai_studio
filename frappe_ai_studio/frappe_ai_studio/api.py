@@ -266,9 +266,16 @@ After creating a new DocType, ALWAYS add it to a relevant Workspace so users can
 
 ## CRITICAL: CORE APP CUSTOMIZATION
 The context includes an "app_metadata" section that tells you if an app is a "core" app.
-- **Core apps** (frappe, erpnext) should NOT be modified directly via file writes.
-- Instead, use the customization change types: `custom_field`, `property_setter`, `server_script`, `client_script`
+- **Core apps** (frappe, erpnext) should NOT be modified directly via file writes (no `write`, `inject_method`, `update_json`).
+- For core apps, use ONLY these customization change types: `custom_field`, `property_setter`, `server_script`, `client_script`, `workspace_link`
 - These customizations are stored in the database and survive updates.
+
+## CRITICAL: CREATING DOCTYPES IN CORE APPS
+When creating a new DocType that belongs in a core app like ERPNext:
+- Set `app_name` to the CORE app (e.g., `"erpnext"`) — NOT a custom app
+- The `module` field in the DocType definition determines the submodule (e.g., `"CRM"`, "Selling", "Stock")
+- Use `create_doctype` change type — this is ALLOWED for core apps because it uses Frappe's DocType API
+- Example: Creating a DocType in ERPNext's CRM module: `{"app_name": "erpnext", "changes": [{"type": "create_doctype", "definition": {"name": "My Doc", "module": "CRM", ...}}]}`
 
 ## CUSTOMIZATION CHANGE TYPES (for core apps like frappe/erpnext)
 - **custom_field**: Add a custom field to an existing DocType
@@ -928,8 +935,14 @@ def apply_ai_changes(app_name, changes):
     if isinstance(changes, str):
         changes = json.loads(changes)
 
-    # Pre-flight: snapshot
-    snapshot_app(app_name)
+    # Determine if any change requires file system access (needs snapshot)
+    file_based_types = {"write", "inject_method", "update_json", "create_doctype", "sync_doctype"}
+    needs_snapshot = any(c.get("type") in file_based_types for c in changes)
+    is_core_app = app_name in ("frappe", "erpnext")
+
+    # Pre-flight: snapshot only for file-based changes in non-core apps
+    if needs_snapshot and not is_core_app:
+        snapshot_app(app_name)
 
     applied = []
     try:
@@ -969,7 +982,7 @@ def apply_ai_changes(app_name, changes):
         return {"status": "applied", "changes": applied}
     except Exception as e:
         # Auto-rollback on failure (only for file-based changes in non-core apps)
-        if app_name not in ("frappe", "erpnext"):
+        if needs_snapshot and not is_core_app:
             rollback_app(app_name)
         frappe.throw(_("Changes caused an error: {0}").format(str(e)))
 
