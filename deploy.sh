@@ -1,11 +1,13 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Deploy script for Frappe AI Studio
-# Usage: ./deploy.sh [bench_path] [site_name]
+# Usage: ./deploy.sh [bench_path] [site_name] [git_url] [branch]
 
-set -e
+set -euo pipefail
 
 BENCH_PATH="${1:-$HOME/frappe-bench}"
 SITE_NAME="${2:-erp.local}"
+GIT_URL="${3:-https://github.com/codepointcreatives/frappe_ai_studio.git}"
+BRANCH="${4:-main}"
 APP_NAME="frappe_ai_studio"
 
 echo "========================================"
@@ -25,12 +27,12 @@ cd "$BENCH_PATH"
 
 # Check if app is installed
 if [ ! -d "apps/$APP_NAME" ]; then
-    echo "Installing $APP_NAME..."
-    bench get-app https://github.com/your-org/frappe-ai-studio.git
+    echo "Installing $APP_NAME from $GIT_URL ($BRANCH)..."
+    bench get-app --branch "$BRANCH" "$GIT_URL"
 else
     echo "Updating $APP_NAME..."
     cd "apps/$APP_NAME"
-    git pull origin main
+    git pull origin "$BRANCH"
     cd "$BENCH_PATH"
 fi
 

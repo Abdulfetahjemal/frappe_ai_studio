@@ -10,21 +10,38 @@ import os
 import subprocess
 
 import frappe
-from frappe import _
 
 # Optional libcst import with graceful fallback
 try:
     import libcst as cst
+
     HAS_LIBCST = True
 except Exception:
     cst = None
     HAS_LIBCST = False
 
 
+class PathTraversalError(Exception):
+    """Raised when a resolved path escapes its app directory."""
+
+
 def resolve_app_path(app_name, *rel_path):
-    """Return an absolute path inside an app using Frappe's helper."""
-    base = frappe.get_app_path(app_name)
-    return os.path.join(base, *rel_path)
+    """Return an absolute path inside an app, guaranteed to stay within it.
+
+    Any attempt to escape the app directory (e.g. via ``..`` segments or an
+    absolute path) raises :class:`PathTraversalError`. This is a security
+    boundary: user/LLM-supplied ``relative_path`` values must never be able to
+    read or write files outside the target app.
+    """
+    base = os.path.realpath(frappe.get_app_path(app_name))
+    # Reject absolute-path components outright before joining.
+    for part in rel_path:
+        if part and os.path.isabs(part):
+            raise PathTraversalError("Absolute paths are not allowed: {}".format(part))
+    target = os.path.realpath(os.path.join(base, *rel_path))
+    if target != base and not target.startswith(base + os.sep):
+        raise PathTraversalError("Path '{}' escapes app directory '{}'".format(target, base))
+    return target
 
 
 def safe_read(file_path, mode="r"):
@@ -70,34 +87,58 @@ def validate_python_syntax(code):
     return True, "OK"
 
 
-def git_snapshot(app_name):
-    """Create a git commit in the target app repo before changes."""
-    app_path = frappe.get_app_path(app_name)
+def _app_repo_and_pathspec(app_name):
+    """Return (repo_path, pathspec) for the app's source subtree.
+
+    ``pathspec`` scopes git operations to the app's own files so we never
+    touch unrelated changes elsewhere in the repository.
+    """
+    app_path = os.path.realpath(frappe.get_app_path(app_name))
     repo_path = os.path.dirname(app_path)
+    pathspec = os.path.relpath(app_path, repo_path)
+    return repo_path, pathspec
+
+
+def git_snapshot(app_name):
+    """Commit the target app's current state before applying changes.
+
+    Only the app's own subtree is staged and committed, so unrelated
+    uncommitted work elsewhere in the repo is left untouched.
+    """
+    repo_path, pathspec = _app_repo_and_pathspec(app_name)
     git_dir = os.path.join(repo_path, ".git")
     if not os.path.isdir(git_dir):
         return True, "No git repository found — skipping snapshot"
 
     try:
-        # Check if there are any changes to commit
+        # Only look at changes within the app subtree.
         status_result = subprocess.run(
-            ["git", "-C", repo_path, "status", "--porcelain"],
+            ["git", "-C", repo_path, "status", "--porcelain", "--", pathspec],
             check=True,
             capture_output=True,
             text=True,
         )
         if not status_result.stdout.strip():
-            # Working tree clean — nothing to snapshot
             return True, "Working tree clean — no snapshot needed"
 
         subprocess.run(
-            ["git", "-C", repo_path, "add", "-A"],
+            ["git", "-C", repo_path, "add", "--", pathspec],
             check=True,
             capture_output=True,
             text=True,
         )
         subprocess.run(
-            ["git", "-C", repo_path, "commit", "-m", "ai-studio: pre-change snapshot", "--no-verify"],
+            [
+                "git",
+                "-C",
+                repo_path,
+                "commit",
+                "-m",
+                "ai-studio: pre-change snapshot",
+                "--no-verify",
+                "--",
+                pathspec,
+            ],
             check=True,
             capture_output=True,
             text=True,
@@ -108,21 +149,32 @@ def git_snapshot(app_name):
 
 
 def git_rollback(app_name):
-    """Rollback the target app repo to the last commit."""
-    app_path = frappe.get_app_path(app_name)
-    repo_path = os.path.dirname(app_path)
+    """Restore the target app's subtree to the last snapshot/commit.
+
+    Uses a scoped checkout + clean rather than a repo-wide ``reset --hard`` so
+    that uncommitted work outside the app subtree is never discarded.
+    """
+    repo_path, pathspec = _app_repo_and_pathspec(app_name)
     git_dir = os.path.join(repo_path, ".git")
     if not os.path.isdir(git_dir):
         return False, "No git repository found"
 
     try:
+        # Restore tracked files within the app subtree to HEAD.
         subprocess.run(
-            ["git", "-C", repo_path, "reset", "--hard", "HEAD"],
+            ["git", "-C", repo_path, "checkout", "HEAD", "--", pathspec],
             check=True,
             capture_output=True,
             text=True,
         )
-        return True, "Rolled back to HEAD"
+        # Remove any newly-created (untracked) files within the app subtree.
+        subprocess.run(
+            ["git", "-C", repo_path, "clean", "-fd", "--", pathspec],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return True, "Rolled back app changes"
     except subprocess.CalledProcessError as e:
         return False, e.stderr or "Git rollback failed"
 
@@ -130,6 +182,7 @@ def git_rollback(app_name):
 # ---------------------------------------------------------------------------
 # libcst helpers
 # ---------------------------------------------------------------------------
+
 
 def _get_method_injector():
     """Return the MethodInjector class lazily to avoid import-time errors."""
@@ -148,9 +201,7 @@ def _get_method_injector():
             if original_node.name.value == self.class_name and not self.done:
                 self.done = True
                 new_body = list(updated_node.body.body) + [self.method_node]
-                return updated_node.with_changes(
-                    body=updated_node.body.with_changes(body=new_body)
-                )
+                return updated_node.with_changes(body=updated_node.body.with_changes(body=new_body))
             return updated_node
 
     return _MethodInjector

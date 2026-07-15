@@ -6,9 +6,8 @@ from __future__ import unicode_literals
 import unittest
 
 from frappe_ai_studio.frappe_ai_studio.ast_sanitizer import (
-    validate_code_security,
     is_code_safe,
-    SecurityVisitor,
+    validate_code_security,
 )
 
 

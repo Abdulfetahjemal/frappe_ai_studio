@@ -5,16 +5,22 @@ from __future__ import unicode_literals
 
 import unittest
 
-import frappe
+try:
+    import frappe
 
-from frappe_ai_studio.frappe_ai_studio.customization_bridge import (
-    safe_custom_field,
-    safe_property_setter,
-    safe_server_script,
-    safe_client_script,
-)
+    from frappe_ai_studio.frappe_ai_studio.customization_bridge import (
+        safe_client_script,
+        safe_custom_field,
+        safe_property_setter,
+        safe_server_script,
+    )
+
+    HAS_FRAPPE = True
+except Exception:
+    HAS_FRAPPE = False
 
 
+@unittest.skipUnless(HAS_FRAPPE, "requires a live Frappe environment")
 class TestCustomizationBridge(unittest.TestCase):
     def test_safe_custom_field_create_and_update(self):
         """Create a custom field, then update it idempotently."""
@@ -27,20 +33,26 @@ class TestCustomizationBridge(unittest.TestCase):
             frappe.delete_doc("Custom Field", existing, force=True)
 
         # Create
-        result = safe_custom_field(doctype, {
-            "fieldname": fieldname,
-            "fieldtype": "Data",
-            "label": "AI Studio Test Field",
-            "insert_after": "full_name",
-        })
+        result = safe_custom_field(
+            doctype,
+            {
+                "fieldname": fieldname,
+                "fieldtype": "Data",
+                "label": "AI Studio Test Field",
+                "insert_after": "full_name",
+            },
+        )
         self.assertIn(result["status"], ("created", "updated"))
 
         # Update (idempotent)
-        result2 = safe_custom_field(doctype, {
-            "fieldname": fieldname,
-            "fieldtype": "Data",
-            "label": "AI Studio Test Field Updated",
-        })
+        result2 = safe_custom_field(
+            doctype,
+            {
+                "fieldname": fieldname,
+                "fieldtype": "Data",
+                "label": "AI Studio Test Field Updated",
+            },
+        )
         self.assertEqual(result2["status"], "updated")
 
         # Verify

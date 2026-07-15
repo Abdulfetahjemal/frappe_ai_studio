@@ -8,7 +8,6 @@ import os
 
 import frappe
 from frappe import _
-from frappe.core.doctype.doctype.doctype import DocType
 
 
 def sync_doctype_from_json(app_name, relative_json_path):
@@ -75,7 +74,8 @@ def _get_unique_naming_series(prefix, doctype_name):
         if series:
             # Extract prefix before . or #
             import re
-            match = re.match(r'^([A-Za-z0-9_-]+)', series)
+
+            match = re.match(r"^([A-Za-z0-9_-]+)", series)
             if match:
                 existing_prefixes.add(match.group(1))
 
@@ -110,11 +110,9 @@ def create_doctype(app_name, definition):
     # Auto-fix naming series to avoid conflicts
     fields = definition.get("fields", [])
     naming_series_field = None
-    naming_series_idx = None
-    for idx, field in enumerate(fields):
+    for field in fields:
         if field.get("fieldname") == "naming_series":
             naming_series_field = field
-            naming_series_idx = idx
             break
 
     if naming_series_field:
@@ -122,8 +120,9 @@ def create_doctype(app_name, definition):
         if current_options:
             # Extract prefix from first series option
             import re
+
             first_series = current_options.split("\n")[0].strip()
-            match = re.match(r'^([A-Za-z0-9_-]+)', first_series)
+            match = re.match(r"^([A-Za-z0-9_-]+)", first_series)
             if match:
                 suggested_prefix = match.group(1) + "-"
                 unique_prefix = _get_unique_naming_series(suggested_prefix, doctype_name)
@@ -133,18 +132,21 @@ def create_doctype(app_name, definition):
                     for opt in current_options.split("\n"):
                         opt = opt.strip()
                         if opt:
-                            new_opt = re.sub(r'^([A-Za-z0-9_-]+)', unique_prefix.rstrip("-"), opt)
+                            new_opt = re.sub(r"^([A-Za-z0-9_-]+)", unique_prefix.rstrip("-"), opt)
                             new_options.append(new_opt)
                         else:
                             new_options.append(opt)
                     naming_series_field["options"] = "\n".join(new_options)
-                    frappe.msgprint(_("Naming series auto-adjusted from '{0}' to '{1}' to avoid conflicts.").format(
-                        suggested_prefix, unique_prefix))
+                    frappe.msgprint(
+                        _("Naming series auto-adjusted from '{0}' to '{1}' to avoid conflicts.").format(
+                            suggested_prefix, unique_prefix
+                        )
+                    )
 
     # 1. Determine the correct module path
     module_name = definition.get("module", app_name)
     app_path = frappe.get_app_path(app_name)
-    
+
     # Frappe stores doctypes under app/module/doctype/name/
     # If module is the same as app_name, use app/doctype/name/
     if module_name and module_name != app_name:
@@ -155,7 +157,7 @@ def create_doctype(app_name, definition):
             dt_folder = os.path.join(app_path, "doctype", frappe.scrub(doctype_name))
     else:
         dt_folder = os.path.join(app_path, "doctype", frappe.scrub(doctype_name))
-    
+
     os.makedirs(dt_folder, exist_ok=True)
 
     json_path = os.path.join(dt_folder, f"{frappe.scrub(doctype_name)}.json")

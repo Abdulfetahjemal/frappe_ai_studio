@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
-"""Frappe AI Studio — Self-Modifying Developer Agent."""
+"""Frappe AI Studio — AI developer agent for the Frappe Framework."""
 
 from __future__ import unicode_literals
 
 app_name = "frappe_ai_studio"
 app_title = "Frappe AI Studio"
 app_publisher = "Frappe AI Studio"
-app_description = "A Self-Modifying Developer Agent for the Frappe Framework"
-app_email = "ai@example.com"
+app_description = "An AI-powered developer agent for the Frappe Framework"
+app_email = "ai@codepointcreatives.com"
 app_license = "MIT"
+
+# Frappe AI Studio only makes sense on top of the Frappe framework.
+required_apps = ["frappe"]
 
 # -----------------------------
 # App Includes
@@ -17,36 +20,21 @@ app_include_js = "/assets/frappe_ai_studio/js/ai_studio_global.js"
 app_include_css = "/assets/frappe_ai_studio/css/ai_studio_global.css"
 
 # -----------------------------
-# Website Context
-# -----------------------------
-website_context = {
-    "favicon": "/assets/frappe_ai_studio/images/favicon.png",
-    "splash_image": "/assets/frappe_ai_studio/images/splash.png",
-}
-
-# -----------------------------
 # Page & Workspace
 # -----------------------------
 page_js = {"ai-studio": "public/js/ai_studio_page.js"}
 page_css = {"ai-studio": "public/css/ai_studio_page.css"}
 
 # -----------------------------
-# Scheduled Jobs (optional indexing)
+# Install / migrate hooks
 # -----------------------------
-scheduler_events = {
-    "hourly": [
-        "frappe_ai_studio.frappe_ai_studio.context_engine.index_all_apps"
-    ]
-}
+after_install = "frappe_ai_studio.frappe_ai_studio.install.after_install"
+after_migrate = "frappe_ai_studio.frappe_ai_studio.install.after_migrate"
 
 # -----------------------------
-# Doc Events
+# Scheduled Jobs (context indexing)
 # -----------------------------
-# doc_events = {
-#     "*": {
-#         "on_update": "frappe_ai_studio.frappe_ai_studio.events.on_doc_update"
-#     }
-# }
+scheduler_events = {"hourly": ["frappe_ai_studio.frappe_ai_studio.context_engine.index_all_apps"]}
 
 # -----------------------------
 # Boot Session
@@ -60,5 +48,10 @@ fixtures = [
     {
         "dt": "Custom Field",
         "filters": [["dt", "=", "AI Studio Prompt"]],
-    }
+    },
+    # Ship the dedicated role so it is available on every site.
+    {
+        "dt": "Role",
+        "filters": [["role_name", "=", "AI Studio Manager"]],
+    },
 ]

@@ -10,11 +10,9 @@ PILLAR 1: ASYNCHRONOUS AGENT ORCHESTRATION & STATE MANAGEMENT
 from __future__ import unicode_literals
 
 import json
-import time
 
 import frappe
 from frappe import _
-
 
 # ---------------------------------------------------------------------------
 # Stage constants
@@ -43,7 +41,15 @@ STAGE_PROGRESS = {
 # ---------------------------------------------------------------------------
 
 
-def enqueue_generation_task(user_prompt, target_app=None, provider=None, model=None, temperature=None, prompt_name="__direct__", conversation_history=None):
+def enqueue_generation_task(
+    user_prompt,
+    target_app=None,
+    provider=None,
+    model=None,
+    temperature=None,
+    prompt_name="__direct__",
+    conversation_history=None,
+):
     """Create an AI Generation Task and enqueue it for background processing.
 
     Returns the task document name so the frontend can poll or listen for
@@ -145,16 +151,16 @@ def _run_generation_pipeline(
         return
 
     # -------------------------------------------------------------------
-    # Stage 3: Testing — dry-run all changes in a transaction
+    # Stage 3: Testing — static, side-effect-free validation of all changes
     # -------------------------------------------------------------------
     task.set_stage(STAGE_TESTING, STAGE_PROGRESS[STAGE_TESTING])
 
     try:
         if changes_payload:
-            _dry_run_changes(changes_payload, target_app)
-        logger.info("[AI Generation Task %s] Dry-run passed", task_name)
+            _validate_changes(changes_payload, target_app)
+        logger.info("[AI Generation Task %s] Validation passed", task_name)
     except Exception as e:
-        logger.error("[AI Generation Task %s] Dry-run failed: %s", task_name, str(e))
+        logger.error("[AI Generation Task %s] Validation failed: %s", task_name, str(e))
         task.set_failed(frappe.get_traceback())
         return
 
@@ -176,21 +182,35 @@ def _run_generation_pipeline(
 def _extract_changes(ai_response):
     """Extract the JSON changes payload from the AI response text.
 
-    Looks for ```json blocks first, then falls back to parsing the entire
-    response as JSON.
+    Tolerant by design: a conversational reply with no change payload is a
+    valid outcome (returns ``None``), not an error. Tries, in order:
+    a fenced ```json block, any fenced ``` block, then the whole response.
     """
     import re
 
-    m = re.search(r"```json\n([\s\S]*?)\n```", ai_response)
-    if m:
-        payload = json.loads(m.group(1))
-    else:
-        payload = json.loads(ai_response)
-
-    if not payload or not isinstance(payload, dict):
+    if not ai_response or not ai_response.strip():
         return None
 
-    return payload.get("changes")
+    candidates = []
+    # 1. ```json fenced block (allow optional language + flexible whitespace)
+    for m in re.finditer(r"```(?:json)?\s*\n([\s\S]*?)```", ai_response, re.IGNORECASE):
+        candidates.append(m.group(1).strip())
+    # 2. The whole response as a last resort.
+    candidates.append(ai_response.strip())
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            payload = json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(payload, dict) and "changes" in payload:
+            changes = payload.get("changes")
+            return changes if isinstance(changes, list) else None
+
+    # No structured change payload — this was a conversational answer.
+    return None
 
 
 def _lint_changes(changes, target_app):
@@ -257,16 +277,19 @@ def _lint_changes(changes, target_app):
                     raise ValueError("Security violation in client_script at index {}: {}".format(idx, msg))
 
 
-def _dry_run_changes(changes, target_app):
-    """Execute all changes inside a database savepoint that is rolled back.
+def _validate_changes(changes, target_app):
+    """Statically validate all changes without any side effects.
 
-    This ensures structural integrity without persisting anything.
+    Replaces the old savepoint "dry run", which actually wrote files to disk
+    because DB savepoints cannot roll back filesystem or DDL operations.
     """
-    from frappe_ai_studio.frappe_ai_studio.transaction_guard import DryRunContext
+    from frappe_ai_studio.frappe_ai_studio.api import validate_changes
 
-    with DryRunContext():
-        from frappe_ai_studio.frappe_ai_studio.api import apply_ai_changes
-        apply_ai_changes(target_app, json.dumps(changes))
+    return validate_changes(target_app, changes)
+
+
+# Backwards-compatible alias (older imports referenced _dry_run_changes).
+_dry_run_changes = _validate_changes
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +303,9 @@ def approve_and_deploy(task_name):
 
     Called when the user clicks "Deploy" in the frontend.
     """
+    from frappe_ai_studio.frappe_ai_studio.api import _guard
+
+    _guard()
     task = frappe.get_doc("AI Generation Task", task_name)
     if task.status != STAGE_COMPLETED:
         frappe.throw(_("Task must be in 'Completed' state to deploy. Current state: {0}").format(task.status))
@@ -290,6 +316,7 @@ def approve_and_deploy(task_name):
 
     try:
         from frappe_ai_studio.frappe_ai_studio.api import apply_ai_changes
+
         result = apply_ai_changes(task.target_app, json.dumps(changes))
         return {"status": "deployed", "result": result}
     except Exception as e:
@@ -302,9 +329,16 @@ def reject_and_rollback(task_name):
 
     Called when the user clicks "Reject" in the frontend.
     """
+    from frappe_ai_studio.frappe_ai_studio.api import _guard
+
+    _guard()
     task = frappe.get_doc("AI Generation Task", task_name)
     if task.status not in (STAGE_COMPLETED, STAGE_FAILED):
-        frappe.throw(_("Task must be in 'Completed' or 'Failed' state to reject. Current state: {0}").format(task.status))
+        frappe.throw(
+            _("Task must be in 'Completed' or 'Failed' state to reject. Current state: {0}").format(
+                task.status
+            )
+        )
 
     task.set_rolled_back()
     return {"status": "rolled_back"}
@@ -313,6 +347,9 @@ def reject_and_rollback(task_name):
 @frappe.whitelist()
 def get_generation_task_status(task_name):
     """Return the current status of a generation task."""
+    from frappe_ai_studio.frappe_ai_studio.api import _guard
+
+    _guard()
     task = frappe.get_doc("AI Generation Task", task_name)
     return {
         "task_id": task.name,

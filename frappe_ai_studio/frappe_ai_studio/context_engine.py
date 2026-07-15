@@ -8,7 +8,6 @@ import os
 
 import frappe
 
-
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -16,12 +15,40 @@ import frappe
 MAX_FILE_SIZE = 50000  # Skip files larger than 50KB
 MAX_CONTEXT_SIZE = 500000  # Approximate max context chars
 BINARY_EXTENSIONS = {
-    ".pyc", ".pyo", ".so", ".dll", ".dylib", ".exe", ".bin",
-    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", ".ico",
-    ".mp3", ".mp4", ".wav", ".avi", ".mov", ".webm",
-    ".zip", ".tar", ".gz", ".bz2", ".xz", ".rar", ".7z",
-    ".woff", ".woff2", ".ttf", ".otf", ".eot",
-    ".map", ".lock",
+    ".pyc",
+    ".pyo",
+    ".so",
+    ".dll",
+    ".dylib",
+    ".exe",
+    ".bin",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".bmp",
+    ".svg",
+    ".ico",
+    ".mp3",
+    ".mp4",
+    ".wav",
+    ".avi",
+    ".mov",
+    ".webm",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".bz2",
+    ".xz",
+    ".rar",
+    ".7z",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".otf",
+    ".eot",
+    ".map",
+    ".lock",
 }
 SKIP_DIRS = {"__pycache__", "node_modules", ".git", ".github", ".vscode", "dist", "build"}
 
@@ -29,6 +56,7 @@ SKIP_DIRS = {"__pycache__", "node_modules", ".git", ".github", ".vscode", "dist"
 # ---------------------------------------------------------------------------
 # Path helpers
 # ---------------------------------------------------------------------------
+
 
 def get_bench_path():
     """Return the absolute path to the bench root."""
@@ -44,21 +72,21 @@ def get_apps_path():
 # App listing
 # ---------------------------------------------------------------------------
 
+
 def list_installed_apps():
     """Return a list of app names found in the bench apps directory."""
     apps_dir = get_apps_path()
     if not os.path.isdir(apps_dir):
         return []
     return [
-        d
-        for d in os.listdir(apps_dir)
-        if os.path.isdir(os.path.join(apps_dir, d)) and not d.startswith(".")
+        d for d in os.listdir(apps_dir) if os.path.isdir(os.path.join(apps_dir, d)) and not d.startswith(".")
     ]
 
 
 # ---------------------------------------------------------------------------
 # File reading helpers
 # ---------------------------------------------------------------------------
+
 
 def _is_binary_file(fname):
     """Check if a file is binary based on extension."""
@@ -114,10 +142,12 @@ def _get_file_tree(app_path, max_depth=5):
         for fname in sorted(files):
             if fname.startswith(".") or _is_binary_file(fname):
                 continue
-            current.setdefault("children", []).append({
-                "name": fname,
-                "type": "file",
-            })
+            current.setdefault("children", []).append(
+                {
+                    "name": fname,
+                    "type": "file",
+                }
+            )
 
     return tree
 
@@ -142,6 +172,7 @@ def _list_files_by_pattern(app_path, pattern_func, max_files=50):
 # ---------------------------------------------------------------------------
 # App metadata
 # ---------------------------------------------------------------------------
+
 
 def get_app_metadata(app_name):
     """Return comprehensive metadata for a single app."""
@@ -181,28 +212,22 @@ def get_app_metadata(app_name):
     controllers = _list_files_by_pattern(
         app_path,
         lambda fname, rel: fname.endswith(".py") and "/doctype/" in rel and not fname.startswith("__"),
-        max_files=30
+        max_files=30,
     )
 
     # JavaScript files
     js_files = _list_files_by_pattern(
-        app_path,
-        lambda fname, rel: fname.endswith(".js") and "/public/" in rel,
-        max_files=30
+        app_path, lambda fname, rel: fname.endswith(".js") and "/public/" in rel, max_files=30
     )
 
     # HTML templates
     templates = _list_files_by_pattern(
-        app_path,
-        lambda fname, rel: fname.endswith(".html") and "/templates/" in rel,
-        max_files=20
+        app_path, lambda fname, rel: fname.endswith(".html") and "/templates/" in rel, max_files=20
     )
 
     # CSS files
     css_files = _list_files_by_pattern(
-        app_path,
-        lambda fname, rel: fname.endswith(".css") and "/public/" in rel,
-        max_files=20
+        app_path, lambda fname, rel: fname.endswith(".css") and "/public/" in rel, max_files=20
     )
 
     # Fixtures
@@ -216,31 +241,19 @@ def get_app_metadata(app_name):
                 if content:
                     fixtures.append({"name": fname, "raw": content})
 
-    # Reports
-    reports = _list_files_by_pattern(
-        app_path,
-        lambda fname, rel: fname == "report" and os.path.isdir(os.path.join(app_path, rel)),
-        max_files=10
-    )
-    # Actually list report JSONs
+    # Reports (list report JSON definitions)
     report_files = _list_files_by_pattern(
-        app_path,
-        lambda fname, rel: fname.endswith(".json") and "/report/" in rel,
-        max_files=20
+        app_path, lambda fname, rel: fname.endswith(".json") and "/report/" in rel, max_files=20
     )
 
     # Pages
     page_files = _list_files_by_pattern(
-        app_path,
-        lambda fname, rel: fname.endswith(".json") and "/page/" in rel,
-        max_files=20
+        app_path, lambda fname, rel: fname.endswith(".json") and "/page/" in rel, max_files=20
     )
 
     # Workspaces
     workspace_files = _list_files_by_pattern(
-        app_path,
-        lambda fname, rel: fname.endswith(".json") and "/workspace/" in rel,
-        max_files=20
+        app_path, lambda fname, rel: fname.endswith(".json") and "/workspace/" in rel, max_files=20
     )
 
     # pyproject.toml / setup.py
@@ -315,6 +328,7 @@ def list_api_files_for_app(app_name):
 # Site & database context
 # ---------------------------------------------------------------------------
 
+
 def get_site_context():
     """Return site configuration summary."""
     return {
@@ -346,21 +360,27 @@ def get_existing_doctypes():
 def get_db_schema_summary():
     """Return a summary of key database tables and columns."""
     try:
-        tables = frappe.db.sql("""
+        tables = frappe.db.sql(
+            """
             SELECT TABLE_NAME
             FROM information_schema.TABLES
             WHERE TABLE_SCHEMA = %s
             ORDER BY TABLE_NAME
-        """, frappe.conf.db_name)
+        """,
+            frappe.conf.db_name,
+        )
 
         schema = {}
         for (table_name,) in tables[:50]:  # Limit to 50 tables
-            columns = frappe.db.sql("""
+            columns = frappe.db.sql(
+                """
                 SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT
                 FROM information_schema.COLUMNS
                 WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
                 ORDER BY ORDINAL_POSITION
-            """, (frappe.conf.db_name, table_name))
+            """,
+                (frappe.conf.db_name, table_name),
+            )
             schema[table_name] = [
                 {
                     "column": c[0],
@@ -378,6 +398,7 @@ def get_db_schema_summary():
 # ---------------------------------------------------------------------------
 # Context builder
 # ---------------------------------------------------------------------------
+
 
 def build_context(target_app=None):
     """Build a full JSON context of the bench (or a single app)."""
@@ -421,9 +442,6 @@ def get_cached_context(target_app=None):
         context = json.loads(cached)
         # If target_app specified, filter the cached context
         if target_app and "apps" in context:
-            context["apps"] = {
-                k: v for k, v in context["apps"].items()
-                if k == target_app
-            }
+            context["apps"] = {k: v for k, v in context["apps"].items() if k == target_app}
         return context
     return index_all_apps()

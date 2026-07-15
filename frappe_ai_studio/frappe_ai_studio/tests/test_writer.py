@@ -18,15 +18,14 @@ class TestWriter(unittest.TestCase):
     def setUpClass(cls):
         # Set up frappe mock once before all tests
         frappe_mock = type(sys)("frappe")
-        frappe_mock.get_app_path = lambda app, *parts: os.path.join(
-            "/tmp/apps", app, *parts
-        )
+        frappe_mock.get_app_path = lambda app, *parts: os.path.join("/tmp/apps", app, *parts)
         frappe_mock._ = lambda x: x
         sys.modules["frappe"] = frappe_mock
         sys.modules["frappe.utils"] = type(sys)("frappe.utils")
 
         # Import after mock is set up
         import frappe_ai_studio.frappe_ai_studio.writer as writer_mod
+
         importlib.reload(writer_mod)
         cls.writer = writer_mod
 

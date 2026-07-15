@@ -1,3 +1,9 @@
-libcst>=1.1.0
+# Core runtime dependencies. Canonical source is pyproject.toml —
+# this file is kept for tooling that still reads requirements.txt.
+libcst>=1.1.0,<2.0.0
 pyflakes>=3.2.0
-requests>=2.31.0
+requests>=2.31.0,<3.0.0
+
+# Optional: only required for the Google Gemini provider.
+# Install with:  pip install google-genai
+# google-genai>=0.3.0

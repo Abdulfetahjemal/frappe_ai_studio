@@ -149,6 +149,21 @@ FORBIDDEN_CALLS = {
     "locals",
     "vars",
     "dir",
+    "execfile",
+    "reload",
+    "memoryview",
+}
+
+# Dangerous names that must never be referenced even when not directly called
+# (blocks aliasing such as ``f = eval`` and introspection escapes).
+FORBIDDEN_NAMES = {
+    "__builtins__",
+    "__import__",
+    "__loader__",
+    "__spec__",
+    "builtins",
+    "subprocess",
+    "os_system",
 }
 
 # ---------------------------------------------------------------------------
@@ -165,21 +180,16 @@ class SecurityVisitor(ast.NodeVisitor):
     def visit_Import(self, node):
         for alias in node.names:
             if not self._is_allowed_import(alias.name):
-                self.violations.append(
-                    "Forbidden import: '{}' at line {}".format(alias.name, node.lineno)
-                )
+                self.violations.append("Forbidden import: '{}' at line {}".format(alias.name, node.lineno))
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node):
         module = node.module or ""
-        full_module = module
         for alias in node.names:
             # from X import Y  →  X.Y
             name = "{}.{}".format(module, alias.name) if module else alias.name
             if not self._is_allowed_import(name) and not self._is_allowed_import(module):
-                self.violations.append(
-                    "Forbidden import: '{}' at line {}".format(name, node.lineno)
-                )
+                self.violations.append("Forbidden import: '{}' at line {}".format(name, node.lineno))
         self.generic_visit(node)
 
     def visit_Call(self, node):
@@ -187,21 +197,23 @@ class SecurityVisitor(ast.NodeVisitor):
         if func_name:
             base = func_name.split("(")[0].split("[")[0]
             if base in FORBIDDEN_CALLS:
-                self.violations.append(
-                    "Forbidden call: '{}' at line {}".format(base, node.lineno)
-                )
+                self.violations.append("Forbidden call: '{}' at line {}".format(base, node.lineno))
             elif not self._is_allowed_function(base):
-                self.violations.append(
-                    "Forbidden function call: '{}' at line {}".format(base, node.lineno)
-                )
+                self.violations.append("Forbidden function call: '{}' at line {}".format(base, node.lineno))
         self.generic_visit(node)
 
     def visit_Attribute(self, node):
         # Block dunder attribute access chains like obj.__class__.__bases__
         if isinstance(node.attr, str) and node.attr.startswith("__") and node.attr.endswith("__"):
-            self.violations.append(
-                "Forbidden dunder access: '.{}' at line {}".format(node.attr, node.lineno)
-            )
+            self.violations.append("Forbidden dunder access: '.{}' at line {}".format(node.attr, node.lineno))
+        self.generic_visit(node)
+
+    def visit_Name(self, node):
+        # Close the aliasing bypass: `f = eval; f("...")` would otherwise slip
+        # past visit_Call because the dangerous builtin is never *called*
+        # directly. Flag any reference to a forbidden builtin, in any context.
+        if node.id in FORBIDDEN_CALLS or node.id in FORBIDDEN_NAMES:
+            self.violations.append("Forbidden reference to '{}' at line {}".format(node.id, node.lineno))
         self.generic_visit(node)
 
     def _is_allowed_import(self, name):

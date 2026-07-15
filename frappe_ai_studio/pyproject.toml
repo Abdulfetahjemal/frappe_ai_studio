@@ -1,0 +1,48 @@
+[project]
+name = "frappe_ai_studio"
+version = "0.1.0"
+description = "An AI-powered developer agent for the Frappe Framework"
+authors = [
+    { name = "Frappe AI Studio", email = "ai@codepointcreatives.com" },
+]
+requires-python = ">=3.10"
+readme = "README.md"
+license = "MIT"
+dependencies = [
+    # Core runtime dependencies (installed by `bench get-app`).
+    "libcst>=1.1.0,<2.0.0",
+    "pyflakes>=3.2.0",
+    "requests>=2.31.0,<3.0.0",
+]
+
+[project.optional-dependencies]
+# Only needed if you use the Google Gemini provider.
+gemini = ["google-genai>=0.3.0"]
+# Developer tooling for linting/formatting/tests.
+dev = [
+    "ruff>=0.5.0",
+]
+
+[build-system]
+requires = ["flit_core >=3.4,<4"]
+build-backend = "flit_core.buildapi"
+
+[tool.flit.module]
+name = "frappe_ai_studio"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+extend-exclude = ["*.json"]
+
+[tool.ruff.lint]
+# Pragmatic default set; matches Frappe's own conventions loosely.
+select = ["F", "E", "W", "I"]
+ignore = [
+    "E501",  # line length handled by formatter/line-length above
+    "E402",  # module level import not at top (common in Frappe hooks)
+    "F403",  # star imports are used in some Frappe modules
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]

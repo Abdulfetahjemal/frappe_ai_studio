@@ -4,7 +4,6 @@
 from __future__ import unicode_literals
 
 import frappe
-from frappe import _
 from frappe.model.document import Document
 
 
@@ -43,7 +42,11 @@ class AIGenerationTask(Document):
         """Update stage and progress atomically."""
         self.current_stage = stage
         self.progress_percent = percent
-        self.status = stage if stage in ("Pending", "In Progress", "Linting", "Testing", "Completed", "Failed", "Rolled Back") else self.status
+        self.status = (
+            stage
+            if stage in ("Pending", "In Progress", "Linting", "Testing", "Completed", "Failed", "Rolled Back")
+            else self.status
+        )
         self.save(ignore_permissions=True)
         frappe.db.commit()
 
@@ -56,7 +59,9 @@ class AIGenerationTask(Document):
         self.changes_payload = changes_payload
         self.completed_at = frappe.utils.now()
         if self.started_at:
-            self.duration_seconds = (frappe.utils.get_datetime(self.completed_at) - frappe.utils.get_datetime(self.started_at)).total_seconds()
+            self.duration_seconds = (
+                frappe.utils.get_datetime(self.completed_at) - frappe.utils.get_datetime(self.started_at)
+            ).total_seconds()
         self.save(ignore_permissions=True)
         frappe.db.commit()
 
@@ -68,7 +73,9 @@ class AIGenerationTask(Document):
         self.error_trace = error_trace
         self.completed_at = frappe.utils.now()
         if self.started_at:
-            self.duration_seconds = (frappe.utils.get_datetime(self.completed_at) - frappe.utils.get_datetime(self.started_at)).total_seconds()
+            self.duration_seconds = (
+                frappe.utils.get_datetime(self.completed_at) - frappe.utils.get_datetime(self.started_at)
+            ).total_seconds()
         self.save(ignore_permissions=True)
         frappe.db.commit()
 

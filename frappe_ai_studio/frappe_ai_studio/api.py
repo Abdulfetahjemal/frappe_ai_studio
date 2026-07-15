@@ -10,13 +10,14 @@ import subprocess
 import frappe
 from frappe import _
 
+from frappe_ai_studio.frappe_ai_studio.ast_sanitizer import validate_code_security
 from frappe_ai_studio.frappe_ai_studio.context_engine import (
     build_context,
     get_cached_context,
 )
 from frappe_ai_studio.frappe_ai_studio.writer import (
-    git_snapshot,
     git_rollback,
+    git_snapshot,
     inject_method_to_class,
     resolve_app_path,
     safe_read,
@@ -24,19 +25,6 @@ from frappe_ai_studio.frappe_ai_studio.writer import (
     update_json_file,
     validate_python_syntax,
 )
-from frappe_ai_studio.frappe_ai_studio.ast_sanitizer import validate_code_security
-from frappe_ai_studio.frappe_ai_studio.customization_bridge import (
-    safe_custom_field,
-    safe_property_setter,
-    safe_server_script,
-    safe_client_script,
-    safe_hooks_injection,
-    safe_workspace_link,
-    safe_workspace_link_remove,
-    safe_workspace_shortcut,
-    safe_workspace_shortcut_remove,
-)
-from frappe_ai_studio.frappe_ai_studio.transaction_guard import dry_run
 
 # ---------------------------------------------------------------------------
 # Provider / model registry
@@ -159,14 +147,18 @@ def _get_llm_config(provider=None, model=None, temperature=None):
         "provider": provider or frappe.conf.get("ai_studio_llm_provider", "OpenAI"),
         "api_key": frappe.conf.get("ai_studio_api_key"),
         "model": model or frappe.conf.get("ai_studio_model", "gpt-4o"),
-        "temperature": temperature if temperature is not None else frappe.conf.get("ai_studio_temperature", 0.2),
+        "temperature": temperature
+        if temperature is not None
+        else frappe.conf.get("ai_studio_temperature", 0.2),
         "api_base_url": None,
     }
 
     if settings:
         cfg["provider"] = provider or settings.default_provider or cfg["provider"]
         cfg["model"] = model or settings.default_model or cfg["model"]
-        cfg["temperature"] = temperature if temperature is not None else (settings.temperature or cfg["temperature"])
+        cfg["temperature"] = (
+            temperature if temperature is not None else (settings.temperature or cfg["temperature"])
+        )
         cfg["api_key"] = settings.get_password("api_key") or cfg["api_key"]
 
     return cfg
@@ -175,6 +167,67 @@ def _get_llm_config(provider=None, model=None, temperature=None):
 def _resolve_provider_from_model(model):
     """Guess provider from model id."""
     return MODEL_PROVIDER_MAP.get(model, "OpenAI")
+
+
+# ---------------------------------------------------------------------------
+# Access control, auditing & limits
+# ---------------------------------------------------------------------------
+
+# AI Studio can write code, run bench commands and mutate schema. Every
+# endpoint below is therefore restricted to trusted roles. "AI Studio Manager"
+# is shipped as a fixture so access can be granted without full System Manager.
+AI_STUDIO_ROLES = ["System Manager", "AI Studio Manager"]
+
+# Guard against runaway prompts / payloads.
+MAX_PROMPT_CHARS = 100000
+MAX_CHANGES_PER_REQUEST = 100
+
+
+def _guard(roles=None):
+    """Enforce that the current user holds an AI Studio role.
+
+    Defensive against unit-test frappe mocks that omit ``only_for``.
+    """
+    only_for = getattr(frappe, "only_for", None)
+    if callable(only_for):
+        only_for(roles or AI_STUDIO_ROLES)
+
+
+def _audit(action, **details):
+    """Record a structured audit entry for a mutating action."""
+    session = getattr(frappe, "session", None)
+    user = getattr(session, "user", None) if session else None
+    try:
+        frappe.logger("ai_studio").info(
+            "audit user=%s action=%s details=%s",
+            user,
+            action,
+            json.dumps(details, default=str)[:2000],
+        )
+    except Exception:
+        pass
+
+
+def _parse_changes(changes):
+    """Normalise a ``changes`` argument into a validated list of dicts."""
+    if isinstance(changes, str):
+        changes = json.loads(changes)
+    if not isinstance(changes, list):
+        frappe.throw(_("Changes must be a list"))
+    if len(changes) > MAX_CHANGES_PER_REQUEST:
+        frappe.throw(_("Too many changes in one request (max {0})").format(MAX_CHANGES_PER_REQUEST))
+    return changes
+
+
+def _in_batch():
+    flags = getattr(frappe, "flags", None)
+    return bool(getattr(flags, "ai_studio_in_batch", False)) if flags else False
+
+
+def _maybe_commit():
+    """Commit unless we are inside an atomic batch (committed once at the end)."""
+    if not _in_batch():
+        frappe.db.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -364,8 +417,10 @@ The user must explicitly approve (Deploy) or reject (Rollback) the changes.
 # LLM call implementations
 # ---------------------------------------------------------------------------
 
+
 def _call_openai_compatible(url, headers, payload):
     import requests
+
     resp = requests.post(url, headers=headers, json=payload, timeout=120)
     resp.raise_for_status()
     data = resp.json()
@@ -445,15 +500,9 @@ def _call_gemini(messages, model, temperature, api_key, api_base_url=None, max_t
         if m.get("role") == "system":
             system_text = m.get("content", "")
         elif m.get("role") == "user":
-            contents.append(types.Content(
-                role="user",
-                parts=[types.Part(text=m.get("content", ""))]
-            ))
+            contents.append(types.Content(role="user", parts=[types.Part(text=m.get("content", ""))]))
         elif m.get("role") == "assistant":
-            contents.append(types.Content(
-                role="model",
-                parts=[types.Part(text=m.get("content", ""))]
-            ))
+            contents.append(types.Content(role="model", parts=[types.Part(text=m.get("content", ""))]))
 
     config = types.GenerateContentConfig(
         temperature=temperature,
@@ -662,6 +711,7 @@ def _call_openrouter(messages, model, temperature, api_key, api_base_url=None, m
 # Unified LLM runner
 # ---------------------------------------------------------------------------
 
+
 def _run_llm(messages, provider=None, model=None, temperature=None):
     cfg = _get_llm_config(provider=provider, model=model, temperature=temperature)
     provider = cfg["provider"]
@@ -696,35 +746,43 @@ def _run_llm(messages, provider=None, model=None, temperature=None):
 # Whitelisted API methods
 # ---------------------------------------------------------------------------
 
+
 @frappe.whitelist()
 def get_context(target_app=None):
     """Return the current bench context (cached)."""
+    _guard()
     return get_cached_context(target_app=target_app)
 
 
 @frappe.whitelist()
 def get_llm_providers():
     """Return list of supported LLM providers and their models."""
+    _guard()
     providers = []
     for name, endpoint in PROVIDER_ENDPOINTS.items():
-        providers.append({
-            "name": name,
-            "endpoint": endpoint,
-            "env_var": PROVIDER_API_KEY_ENV.get(name),
-        })
+        providers.append(
+            {
+                "name": name,
+                "endpoint": endpoint,
+                "env_var": PROVIDER_API_KEY_ENV.get(name),
+            }
+        )
     return providers
 
 
 @frappe.whitelist()
 def get_installed_apps():
     """Return list of installed apps in the bench."""
+    _guard()
     from frappe_ai_studio.frappe_ai_studio.context_engine import list_installed_apps
+
     return list_installed_apps()
 
 
 @frappe.whitelist()
 def get_ai_studio_settings():
     """Return current AI Studio settings (safe, no API key)."""
+    _guard()
     settings = _get_active_settings()
     if not settings:
         return {
@@ -744,12 +802,15 @@ def get_ai_studio_settings():
 @frappe.whitelist()
 def save_ai_studio_settings(settings_json):
     """Save AI Studio settings."""
+    _guard()
     if isinstance(settings_json, str):
         settings_json = json.loads(settings_json)
 
-    doc = frappe.get_doc("AI Studio Settings", "AI Studio Settings") \
-        if frappe.db.exists("AI Studio Settings", "AI Studio Settings") \
+    doc = (
+        frappe.get_doc("AI Studio Settings", "AI Studio Settings")
+        if frappe.db.exists("AI Studio Settings", "AI Studio Settings")
         else frappe.new_doc("AI Studio Settings")
+    )
 
     doc.default_provider = settings_json.get("default_provider", "OpenAI")
     doc.default_model = settings_json.get("default_model", "gpt-4o")
@@ -760,22 +821,27 @@ def save_ai_studio_settings(settings_json):
     # Handle enabled models table
     doc.set("enabled_models", [])
     for m in settings_json.get("enabled_models", []):
-        doc.append("enabled_models", {
-            "provider": m.get("provider"),
-            "model_name": m.get("model_name"),
-            "model_id": m.get("model_id"),
-            "enabled": m.get("enabled", 1),
-            "api_base_url": m.get("api_base_url"),
-        })
+        doc.append(
+            "enabled_models",
+            {
+                "provider": m.get("provider"),
+                "model_name": m.get("model_name"),
+                "model_id": m.get("model_id"),
+                "enabled": m.get("enabled", 1),
+                "api_base_url": m.get("api_base_url"),
+            },
+        )
 
     doc.save(ignore_permissions=True)
     frappe.db.commit()
+    _audit("save_settings", provider=doc.default_provider, model=doc.default_model)
     return {"status": "saved"}
 
 
 @frappe.whitelist()
 def read_file(app_name, relative_path):
     """Read a file inside an app."""
+    _guard()
     file_path = resolve_app_path(app_name, *relative_path.strip("/").split("/"))
     content = safe_read(file_path)
     if content is None:
@@ -786,6 +852,7 @@ def read_file(app_name, relative_path):
 @frappe.whitelist()
 def list_app_files(app_name, max_depth=4):
     """List all files in an app up to a certain depth."""
+    _guard()
     try:
         max_depth = int(max_depth)
     except (ValueError, TypeError):
@@ -796,9 +863,8 @@ def list_app_files(app_name, max_depth=4):
         return {"files": [], "tree": {}}
 
     files = []
-    tree = {"name": app_name, "type": "folder", "children": []}
 
-    # Build file list and tree
+    # Build file list
     for root, dirs, filenames in os.walk(app_path):
         # Skip hidden dirs, __pycache__, node_modules, .git
         dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("__pycache__", "node_modules")]
@@ -818,15 +884,33 @@ def list_app_files(app_name, max_depth=4):
     return {"files": files, "app_path": app_path}
 
 
+def _assert_not_core_file_write(app_name):
+    """Core apps must never be modified via direct file writes."""
+    if app_name in ("frappe", "erpnext"):
+        frappe.throw(
+            _(
+                "Direct file writes to core app '{0}' are not allowed. "
+                "Use custom fields, property setters or scripts instead."
+            ).format(app_name)
+        )
+
+
 @frappe.whitelist()
 def write_code(app_name, relative_path, content, action="overwrite"):
-    """Write code to a file with pre-flight validation."""
+    """Write code to a file with pre-flight syntax + security validation."""
+    _guard()
+    _assert_not_core_file_write(app_name)
     file_path = resolve_app_path(app_name, *relative_path.strip("/").split("/"))
 
     if file_path.endswith(".py"):
         ok, msg = validate_python_syntax(content)
         if not ok:
             frappe.throw(_("Validation failed: {0}").format(msg))
+        # Security scan applies to every path that writes Python, not just the
+        # async pipeline — this is a hard boundary, not a convenience check.
+        sec_ok, sec_msg = validate_code_security(content)
+        if not sec_ok:
+            frappe.throw(_("Security check failed: {0}").format(sec_msg))
 
     if action == "overwrite":
         safe_write(file_path, content)
@@ -836,30 +920,41 @@ def write_code(app_name, relative_path, content, action="overwrite"):
     else:
         frappe.throw(_("Unknown action: {0}").format(action))
 
+    _audit("write_code", app=app_name, path=relative_path, action=action)
     return {"path": file_path, "status": "saved"}
 
 
 @frappe.whitelist()
 def inject_method(app_name, relative_path, class_name, method_code):
     """Surgically inject a method into a class via libcst."""
+    _guard()
+    _assert_not_core_file_write(app_name)
+    sec_ok, sec_msg = validate_code_security(method_code)
+    if not sec_ok:
+        frappe.throw(_("Security check failed: {0}").format(sec_msg))
     file_path = resolve_app_path(app_name, *relative_path.strip("/").split("/"))
     inject_method_to_class(file_path, class_name, method_code)
+    _audit("inject_method", app=app_name, path=relative_path, cls=class_name)
     return {"path": file_path, "status": "injected"}
 
 
 @frappe.whitelist()
 def update_json(app_name, relative_path, updates):
     """Merge JSON updates into a file."""
+    _guard()
+    _assert_not_core_file_write(app_name)
     file_path = resolve_app_path(app_name, *relative_path.strip("/").split("/"))
     if isinstance(updates, str):
         updates = json.loads(updates)
     update_json_file(file_path, updates)
+    _audit("update_json", app=app_name, path=relative_path)
     return {"path": file_path, "status": "updated"}
 
 
 @frappe.whitelist()
 def snapshot_app(app_name):
     """Git-commit the target app before changes."""
+    _guard()
     ok, msg = git_snapshot(app_name)
     if not ok:
         frappe.throw(msg)
@@ -869,20 +964,22 @@ def snapshot_app(app_name):
 @frappe.whitelist()
 def rollback_app(app_name):
     """Rollback the target app to the last commit."""
+    _guard()
     ok, msg = git_rollback(app_name)
     if not ok:
         frappe.throw(msg)
+    _audit("rollback_app", app=app_name)
     return {"status": "rolled_back", "message": msg}
 
 
 @frappe.whitelist()
 def run_bench_command(command):
     """Run an allowed bench command."""
+    _guard()
     allowed = {"migrate", "restart", "clear-cache", "build", "watch", "build --app frappe_ai_studio"}
     if command not in allowed:
         frappe.throw(_("Command '{0}' is not allowed").format(command))
-
-    import subprocess
+    _audit("run_bench_command", command=command)
 
     bench_path = frappe.utils.get_bench_path()
     site = frappe.local.site
@@ -901,12 +998,23 @@ def run_bench_command(command):
 
 
 @frappe.whitelist()
-def execute_prompt(prompt_name, user_prompt=None, target_app=None, provider=None, model=None, temperature=None, conversation_history=None):
+def execute_prompt(
+    prompt_name,
+    user_prompt=None,
+    target_app=None,
+    provider=None,
+    model=None,
+    temperature=None,
+    conversation_history=None,
+):
     """Execute a stored prompt against the LLM and return the response.
 
     This is the SYNCHRONOUS version. For production use, prefer
     execute_prompt_async() which runs the full pipeline (lint, dry-run, approve).
     """
+    _guard()
+    if user_prompt and len(user_prompt) > MAX_PROMPT_CHARS:
+        frappe.throw(_("Prompt exceeds maximum length of {0} characters").format(MAX_PROMPT_CHARS))
     if prompt_name == "__direct__":
         system = DEFAULT_SYSTEM_PROMPT
         user = user_prompt or ""
@@ -919,7 +1027,11 @@ def execute_prompt(prompt_name, user_prompt=None, target_app=None, provider=None
         system = prompt_doc.system_prompt or DEFAULT_SYSTEM_PROMPT
         user = user_prompt or prompt_doc.user_prompt or ""
         model = model or prompt_doc.model or _get_llm_config()["model"]
-        temperature = temperature if temperature is not None else (prompt_doc.temperature or _get_llm_config()["temperature"])
+        temperature = (
+            temperature
+            if temperature is not None
+            else (prompt_doc.temperature or _get_llm_config()["temperature"])
+        )
         provider = provider or prompt_doc.provider or _resolve_provider_from_model(model)
 
     app = target_app
@@ -941,10 +1053,12 @@ def execute_prompt(prompt_name, user_prompt=None, target_app=None, provider=None
             if role in ("user", "assistant") and content:
                 messages.append({"role": role, "content": content})
 
-    messages.append({
-        "role": "user",
-        "content": "Bench Context:\n```json\n{}```\n\nUser Request:\n{}".format(context_json, user),
-    })
+    messages.append(
+        {
+            "role": "user",
+            "content": "Bench Context:\n```json\n{}```\n\nUser Request:\n{}".format(context_json, user),
+        }
+    )
 
     log = frappe.get_doc(
         {
@@ -973,12 +1087,17 @@ def execute_prompt(prompt_name, user_prompt=None, target_app=None, provider=None
 
 
 @frappe.whitelist()
-def execute_prompt_async(user_prompt, target_app=None, provider=None, model=None, temperature=None, conversation_history=None):
+def execute_prompt_async(
+    user_prompt, target_app=None, provider=None, model=None, temperature=None, conversation_history=None
+):
     """Enqueue an AI generation task and return the task ID immediately.
 
     The frontend should listen for 'ai_generation_progress' realtime events
     or poll get_generation_task_status().
     """
+    _guard()
+    if user_prompt and len(user_prompt) > MAX_PROMPT_CHARS:
+        frappe.throw(_("Prompt exceeds maximum length of {0} characters").format(MAX_PROMPT_CHARS))
     from frappe_ai_studio.frappe_ai_studio.agent_orchestrator import enqueue_generation_task
 
     task_name = enqueue_generation_task(
@@ -994,9 +1113,14 @@ def execute_prompt_async(user_prompt, target_app=None, provider=None, model=None
 
 @frappe.whitelist()
 def apply_ai_changes(app_name, changes):
-    """Apply a list of AI-generated file changes atomically with snapshot + rollback."""
-    if isinstance(changes, str):
-        changes = json.loads(changes)
+    """Apply a list of AI-generated changes atomically.
+
+    File-based changes are guarded by a git snapshot (rolled back on failure);
+    database changes run in a single transaction that is rolled back on any
+    error so partial application cannot leave the system half-changed.
+    """
+    _guard()
+    changes = _parse_changes(changes)
 
     # Determine if any change requires file system access (needs snapshot)
     file_based_types = {"write", "inject_method", "update_json", "create_doctype", "sync_doctype"}
@@ -1006,6 +1130,12 @@ def apply_ai_changes(app_name, changes):
     # Pre-flight: snapshot only for file-based changes in non-core apps
     if needs_snapshot and not is_core_app:
         snapshot_app(app_name)
+
+    # Open an atomic batch: helpers defer their commits so the whole batch
+    # commits once at the end (or rolls back together on failure).
+    flags = getattr(frappe, "flags", None)
+    if flags is not None:
+        flags.ai_studio_in_batch = True
 
     applied = []
     try:
@@ -1021,10 +1151,12 @@ def apply_ai_changes(app_name, changes):
                 update_json(app_name, rel, change["updates"])
             elif ctype == "create_doctype":
                 from frappe_ai_studio.frappe_ai_studio.schema_wizard import create_doctype
+
                 definition = change.get("definition") or change.get("updates")
                 create_doctype(app_name, definition)
             elif ctype == "sync_doctype":
                 from frappe_ai_studio.frappe_ai_studio.schema_wizard import sync_doctype_from_json
+
                 sync_doctype_from_json(app_name, rel)
             elif ctype == "run_bench":
                 run_bench_command(change["command"])
@@ -1048,29 +1180,127 @@ def apply_ai_changes(app_name, changes):
                 raise ValueError("Unknown change type: {}".format(ctype))
             applied.append(change)
 
+        # Commit the whole batch atomically.
+        if flags is not None:
+            flags.ai_studio_in_batch = False
+        frappe.db.commit()
+        _audit("apply_ai_changes", app=app_name, count=len(applied), types=[c.get("type") for c in applied])
         return {"status": "applied", "changes": applied}
     except Exception as e:
-        # Auto-rollback on failure (only for file-based changes in non-core apps)
+        # Roll back any uncommitted DB work from this batch.
+        if flags is not None:
+            flags.ai_studio_in_batch = False
+        try:
+            frappe.db.rollback()
+        except Exception:
+            pass
+        # Auto-rollback file changes (only for non-core apps we snapshotted).
         if needs_snapshot and not is_core_app:
             rollback_app(app_name)
+        _audit("apply_ai_changes_failed", app=app_name, error=str(e))
         frappe.throw(_("Changes caused an error: {0}").format(str(e)))
 
 
 @frappe.whitelist()
 def apply_ai_changes_dry_run(app_name, changes):
-    """Apply changes inside a DB savepoint that is automatically rolled back.
+    """Validate changes without any side effects.
 
-    Returns the same result as apply_ai_changes but without persisting anything.
+    The previous implementation ran the real ``apply_ai_changes`` inside a DB
+    savepoint, but savepoints do not roll back filesystem writes, DDL, or bench
+    commands — so a "dry run" mutated the app on disk. This now performs static
+    validation only: nothing is written, executed, or committed.
     """
-    if isinstance(changes, str):
-        changes = json.loads(changes)
+    _guard()
+    changes = _parse_changes(changes)
+    report = validate_changes(app_name, changes)
+    return {"status": "dry_run", "result": report}
 
-    from frappe_ai_studio.frappe_ai_studio.transaction_guard import DryRunContext
 
-    with DryRunContext():
-        result = apply_ai_changes(app_name, changes)
-        # Force a copy so it's available after rollback
-        return {"status": "dry_run", "result": result}
+@frappe.whitelist()
+def validate_changes(app_name, changes):
+    """Statically validate a change list. Side-effect free.
+
+    Verifies structural completeness, Python syntax + security, safe path
+    resolution and that referenced targets (DocTypes, workspaces) exist.
+    Returns a report; raises on the first hard failure so the caller can mark
+    the task failed.
+    """
+    _guard()
+    changes = _parse_changes(changes)
+    is_core_app = app_name in ("frappe", "erpnext")
+    report = []
+
+    for idx, change in enumerate(changes):
+        ctype = change.get("type")
+        issues = []
+
+        if ctype in ("write", "inject_method", "update_json"):
+            rel = change.get("relative_path")
+            if not rel:
+                issues.append("missing 'relative_path'")
+            else:
+                # Path containment check (raises on traversal).
+                resolve_app_path(app_name, *rel.strip("/").split("/"))
+            if is_core_app:
+                issues.append("file writes are not allowed on core app '{}'".format(app_name))
+
+        if ctype == "write" and (change.get("relative_path", "") or "").endswith(".py"):
+            code = change.get("content", "")
+            ok, msg = validate_python_syntax(code)
+            if not ok:
+                issues.append("syntax: {}".format(msg))
+            ok, msg = validate_code_security(code)
+            if not ok:
+                issues.append("security: {}".format(msg))
+
+        if ctype == "inject_method":
+            ok, msg = validate_code_security(change.get("method_code", ""))
+            if not ok:
+                issues.append("security: {}".format(msg))
+            if not change.get("class_name"):
+                issues.append("missing 'class_name'")
+
+        if ctype in ("server_script", "client_script"):
+            ok, msg = validate_code_security(change.get("script", ""))
+            if ctype == "server_script" and not ok:
+                issues.append("security: {}".format(msg))
+            if not change.get("name") or not change.get("script"):
+                issues.append("missing 'name' or 'script'")
+
+        if ctype == "custom_field":
+            if not change.get("doctype"):
+                issues.append("missing 'doctype'")
+            elif not frappe.db.exists("DocType", change.get("doctype")):
+                issues.append("DocType '{}' does not exist".format(change.get("doctype")))
+
+        if ctype == "property_setter":
+            if not change.get("doctype") or not change.get("property"):
+                issues.append("missing 'doctype' or 'property'")
+
+        if ctype in (
+            "workspace_link",
+            "workspace_link_remove",
+            "workspace_shortcut",
+            "workspace_shortcut_remove",
+        ):
+            if not change.get("workspace"):
+                issues.append("missing 'workspace'")
+
+        if ctype == "create_doctype":
+            definition = change.get("definition") or change.get("updates") or {}
+            if not definition.get("name"):
+                issues.append("create_doctype missing definition.name")
+
+        report.append({"index": idx, "type": ctype, "ok": not issues, "issues": issues})
+
+    failures = [r for r in report if not r["ok"]]
+    if failures:
+        summary = "; ".join(
+            "change[{}] ({}): {}".format(r["index"], r["type"], ", ".join(r["issues"])) for r in failures
+        )
+        raise ValueError("Validation failed: {}".format(summary))
+
+    return report
 
 
 @frappe.whitelist()
@@ -1104,48 +1334,38 @@ def preview_changes(app_name, changes):
             item["preview"] = "Run bench command: {}".format(change["command"])
         elif ctype == "custom_field":
             item["preview"] = "Add custom field '{}' to DocType '{}'".format(
-                change.get("field", {}).get("fieldname", "unknown"),
-                change.get("doctype", "unknown")
+                change.get("field", {}).get("fieldname", "unknown"), change.get("doctype", "unknown")
             )
         elif ctype == "property_setter":
             item["preview"] = "Set property '{}' = '{}' on '{}.{}'".format(
                 change.get("property"),
                 change.get("value"),
                 change.get("doctype"),
-                change.get("fieldname", "_doc")
+                change.get("fieldname", "_doc"),
             )
         elif ctype == "server_script":
             item["preview"] = "Server Script '{}': {} event on '{}'".format(
-                change.get("name"),
-                change.get("event"),
-                change.get("doctype")
+                change.get("name"), change.get("event"), change.get("doctype")
             )
         elif ctype == "client_script":
             item["preview"] = "Client Script '{}' for '{}'".format(
-                change.get("name"),
-                change.get("dt") or change.get("doctype")
+                change.get("name"), change.get("dt") or change.get("doctype")
             )
         elif ctype == "workspace_link":
             item["preview"] = "Add link '{}' -> '{}' to Workspace '{}'".format(
-                change.get("label"),
-                change.get("link_to"),
-                change.get("workspace")
+                change.get("label"), change.get("link_to"), change.get("workspace")
             )
         elif ctype == "workspace_link_remove":
             item["preview"] = "REMOVE link '{}' from Workspace '{}'".format(
-                change.get("link_to"),
-                change.get("workspace")
+                change.get("link_to"), change.get("workspace")
             )
         elif ctype == "workspace_shortcut":
             item["preview"] = "Add shortcut '{}' -> '{}' to Workspace '{}'".format(
-                change.get("label"),
-                change.get("link_to"),
-                change.get("workspace")
+                change.get("label"), change.get("link_to"), change.get("workspace")
             )
         elif ctype == "workspace_shortcut_remove":
             item["preview"] = "REMOVE shortcut '{}' from Workspace '{}'".format(
-                change.get("link_to"),
-                change.get("workspace")
+                change.get("link_to"), change.get("workspace")
             )
 
         preview.append(item)
@@ -1177,6 +1397,7 @@ def _simple_diff(old, new):
 # Customization helpers (for core apps like frappe/erpnext)
 # ---------------------------------------------------------------------------
 
+
 def _apply_custom_field(change):
     """Add a custom field to an existing DocType."""
     doctype = change.get("doctype")
@@ -1195,7 +1416,7 @@ def _apply_custom_field(change):
                 if hasattr(doc, key) and key not in ("name", "doctype"):
                     setattr(doc, key, value)
             doc.save(ignore_permissions=True)
-            frappe.db.commit()
+            _maybe_commit()
             return
 
     # Create new custom field directly
@@ -1215,12 +1436,13 @@ def _apply_custom_field(change):
             return
         raise
 
-    frappe.db.commit()
+    _maybe_commit()
 
 
 def _apply_property_setter(change):
     """Change a property of an existing DocType or field."""
     from frappe.custom.doctype.property_setter.property_setter import make_property_setter
+
     doctype = change.get("doctype")
     fieldname = change.get("fieldname")
     property_name = change.get("property")
@@ -1233,7 +1455,7 @@ def _apply_property_setter(change):
     existing = frappe.db.get_value(
         "Property Setter",
         {"doc_type": doctype, "field_name": fieldname or "", "property": property_name},
-        "name"
+        "name",
     )
     if existing:
         # Update existing property setter
@@ -1241,11 +1463,11 @@ def _apply_property_setter(change):
         doc.value = value
         doc.property_type = property_type
         doc.save(ignore_permissions=True)
-        frappe.db.commit()
+        _maybe_commit()
         return
 
     make_property_setter(doctype, fieldname, property_name, value, property_type)
-    frappe.db.commit()
+    _maybe_commit()
 
 
 def _apply_server_script(change):
@@ -1272,7 +1494,7 @@ def _apply_server_script(change):
     doc.script = script
     doc.enabled = enabled
     doc.save(ignore_permissions=True)
-    frappe.db.commit()
+    _maybe_commit()
 
 
 def _apply_client_script(change):
@@ -1297,7 +1519,7 @@ def _apply_client_script(change):
     doc.enabled = enabled
     doc.view = view
     doc.save(ignore_permissions=True)
-    frappe.db.commit()
+    _maybe_commit()
 
 
 def _resolve_workspace(workspace_name):
@@ -1332,17 +1554,20 @@ def _apply_workspace_link(change):
         if link.link_to == link_to and link.link_type == link_type:
             link.label = label
             ws.save(ignore_permissions=True)
-            frappe.db.commit()
+            _maybe_commit()
             return
 
-    ws.append("links", {
-        "type": "Link",
-        "label": label,
-        "link_type": link_type,
-        "link_to": link_to,
-    })
+    ws.append(
+        "links",
+        {
+            "type": "Link",
+            "label": label,
+            "link_type": link_type,
+            "link_to": link_to,
+        },
+    )
     ws.save(ignore_permissions=True)
-    frappe.db.commit()
+    _maybe_commit()
 
 
 def _apply_workspace_link_remove(change):
@@ -1365,12 +1590,14 @@ def _apply_workspace_link_remove(change):
         new_links.append(link)
 
     if not removed:
-        frappe.msgprint(_("Link '{}' not found in workspace '{}' — nothing to remove.").format(link_to, workspace_name))
+        frappe.msgprint(
+            _("Link '{}' not found in workspace '{}' — nothing to remove.").format(link_to, workspace_name)
+        )
         return
 
     ws.links = new_links
     ws.save(ignore_permissions=True)
-    frappe.db.commit()
+    _maybe_commit()
     frappe.msgprint(_("Removed link '{}' from workspace '{}'.").format(link_to, workspace_name))
 
 
@@ -1392,16 +1619,19 @@ def _apply_workspace_shortcut(change):
             shortcut.label = label
             shortcut.type = shortcut_type
             ws.save(ignore_permissions=True)
-            frappe.db.commit()
+            _maybe_commit()
             return
 
-    ws.append("shortcuts", {
-        "label": label,
-        "type": shortcut_type,
-        "link_to": link_to,
-    })
+    ws.append(
+        "shortcuts",
+        {
+            "label": label,
+            "type": shortcut_type,
+            "link_to": link_to,
+        },
+    )
     ws.save(ignore_permissions=True)
-    frappe.db.commit()
+    _maybe_commit()
 
 
 def _apply_workspace_shortcut_remove(change):
@@ -1424,12 +1654,16 @@ def _apply_workspace_shortcut_remove(change):
         new_shortcuts.append(shortcut)
 
     if not removed:
-        frappe.msgprint(_("Shortcut '{}' not found in workspace '{}' — nothing to remove.").format(link_to, workspace_name))
+        frappe.msgprint(
+            _("Shortcut '{}' not found in workspace '{}' — nothing to remove.").format(
+                link_to, workspace_name
+            )
+        )
         return
 
     ws.shortcuts = new_shortcuts
     ws.save(ignore_permissions=True)
-    frappe.db.commit()
+    _maybe_commit()
     frappe.msgprint(_("Removed shortcut '{}' from workspace '{}'.").format(link_to, workspace_name))
 
 
@@ -1437,24 +1671,33 @@ def _apply_workspace_shortcut_remove(change):
 # Async task delegation (proxies to agent_orchestrator)
 # ---------------------------------------------------------------------------
 
+
 @frappe.whitelist()
 def approve_task(task_name):
     """Approve and deploy a completed AI Generation Task."""
+    _guard()
+    _audit("approve_task", task=task_name)
     from frappe_ai_studio.frappe_ai_studio.agent_orchestrator import approve_and_deploy
+
     return approve_and_deploy(task_name)
 
 
 @frappe.whitelist()
 def reject_task(task_name):
     """Reject and roll back a completed AI Generation Task."""
+    _guard()
+    _audit("reject_task", task=task_name)
     from frappe_ai_studio.frappe_ai_studio.agent_orchestrator import reject_and_rollback
+
     return reject_and_rollback(task_name)
 
 
 @frappe.whitelist()
 def get_task_status(task_name):
     """Get the current status of an AI Generation Task."""
+    _guard()
     from frappe_ai_studio.frappe_ai_studio.agent_orchestrator import get_generation_task_status
+
     return get_generation_task_status(task_name)
 
 
@@ -1462,9 +1705,11 @@ def get_task_status(task_name):
 # Security / validation helpers
 # ---------------------------------------------------------------------------
 
+
 @frappe.whitelist()
 def validate_code(code):
     """Run AST security validation on Python code. Returns {ok, message}."""
+    _guard()
     ok, msg = validate_code_security(code)
     return {"ok": ok, "message": msg}
 
@@ -1472,6 +1717,7 @@ def validate_code(code):
 # ---------------------------------------------------------------------------
 # Boot hook
 # ---------------------------------------------------------------------------
+
 
 def on_session_creation():
     """Inject AI Studio settings into bootinfo."""

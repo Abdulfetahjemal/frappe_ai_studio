@@ -5,16 +5,22 @@ from __future__ import unicode_literals
 
 import unittest
 
-import frappe
+try:
+    import frappe
 
-from frappe_ai_studio.frappe_ai_studio.transaction_guard import (
-    DryRunContext,
-    dry_run,
-    is_dry_run_available,
-    MigrationGuard,
-)
+    from frappe_ai_studio.frappe_ai_studio.transaction_guard import (
+        DryRunContext,
+        MigrationGuard,
+        dry_run,
+        is_dry_run_available,
+    )
+
+    HAS_FRAPPE = True
+except Exception:
+    HAS_FRAPPE = False
 
 
+@unittest.skipUnless(HAS_FRAPPE, "requires a live Frappe environment")
 class TestTransactionGuard(unittest.TestCase):
     def test_dry_run_context_rolls_back(self):
         """Ensure DryRunContext rolls back DB changes."""
@@ -25,11 +31,13 @@ class TestTransactionGuard(unittest.TestCase):
         before = frappe.db.count("AI Studio Log")
 
         with DryRunContext():
-            log = frappe.get_doc({
-                "doctype": "AI Studio Log",
-                "prompt": "__test_dry_run__",
-                "status": "Pending",
-            })
+            log = frappe.get_doc(
+                {
+                    "doctype": "AI Studio Log",
+                    "prompt": "__test_dry_run__",
+                    "status": "Pending",
+                }
+            )
             log.insert(ignore_permissions=True)
             frappe.db.commit()
             # Inside the context, the log exists
@@ -48,11 +56,13 @@ class TestTransactionGuard(unittest.TestCase):
         before = frappe.db.count("AI Studio Log")
 
         with dry_run():
-            log = frappe.get_doc({
-                "doctype": "AI Studio Log",
-                "prompt": "__test_dry_run_decorator__",
-                "status": "Pending",
-            })
+            log = frappe.get_doc(
+                {
+                    "doctype": "AI Studio Log",
+                    "prompt": "__test_dry_run_decorator__",
+                    "status": "Pending",
+                }
+            )
             log.insert(ignore_permissions=True)
             frappe.db.commit()
 
@@ -62,13 +72,19 @@ class TestTransactionGuard(unittest.TestCase):
     def test_migration_guard_stage_validate_publish(self):
         """Test the full MigrationGuard lifecycle."""
         guard = MigrationGuard("frappe_ai_studio")
-        guard.stage({"type": "custom_field", "doctype": "User", "field": {"fieldname": "test_guard", "fieldtype": "Data"}})
+        guard.stage(
+            {
+                "type": "custom_field",
+                "doctype": "User",
+                "field": {"fieldname": "test_guard", "fieldtype": "Data"},
+            }
+        )
 
         # validate should run lint + dry-run
         # Since dry-run rolls back, this should not raise
         try:
             guard.validate()
-        except Exception as e:
+        except Exception:
             # If the field already exists or dry-run fails, that's ok for this test
             pass
 

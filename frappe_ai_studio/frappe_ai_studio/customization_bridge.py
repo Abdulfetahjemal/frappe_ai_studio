@@ -12,7 +12,6 @@ Provides safe, idempotent wrappers for:
 
 from __future__ import unicode_literals
 
-import json
 import os
 import shutil
 
@@ -20,7 +19,6 @@ import frappe
 from frappe import _
 
 from frappe_ai_studio.frappe_ai_studio.ast_sanitizer import validate_code_security
-
 
 # ---------------------------------------------------------------------------
 # Custom Field
@@ -40,9 +38,7 @@ def safe_custom_field(doctype, field_definition):
     if not fieldname:
         raise ValueError("field_definition must include 'fieldname'")
 
-    existing = frappe.db.get_value(
-        "Custom Field", {"dt": doctype, "fieldname": fieldname}, "name"
-    )
+    existing = frappe.db.get_value("Custom Field", {"dt": doctype, "fieldname": fieldname}, "name")
 
     if existing:
         doc = frappe.get_doc("Custom Field", existing)
@@ -64,9 +60,7 @@ def safe_custom_field(doctype, field_definition):
     except frappe.ValidationError as e:
         err_msg = str(e)
         if "already exists" in err_msg.lower() or "exists in" in err_msg.lower():
-            frappe.msgprint(
-                _("Field '{0}' already exists in {1}, skipping.").format(fieldname, doctype)
-            )
+            frappe.msgprint(_("Field '{0}' already exists in {1}, skipping.").format(fieldname, doctype))
             return {"status": "skipped", "reason": "already_exists"}
         raise
 
@@ -172,9 +166,7 @@ def safe_client_script(name, script, doctype=None, enabled=1, view=None):
     if not ok:
         # Client scripts are JS, not Python — AST check may give false positives.
         # We log a warning but don't block. Real JS linting should be added later.
-        frappe.logger("ai_studio").warning(
-            "Client Script AST check flagged (expected for JS): %s", msg
-        )
+        frappe.logger("ai_studio").warning("Client Script AST check flagged (expected for JS): %s", msg)
 
     existing = frappe.db.get_value("Client Script", name, "name")
 
@@ -241,12 +233,14 @@ def safe_hooks_injection(app_name, hook_name, hook_value, append=True):
             raise ValueError("hooks.py injection security check failed: {}".format(msg))
 
     # Parse existing hook value
+    import ast
+
     try:
-        import ast
-        tree = ast.parse(original_content)
+        # Sanity-check the source parses before we touch it.
+        ast.parse(original_content)
     except SyntaxError:
-        # hooks.py might have complex syntax; fall back to regex
-        tree = None
+        # hooks.py might have complex syntax; the regex fallback still applies.
+        pass
 
     new_content = _inject_hook_value(original_content, hook_name, hook_value, append)
 
@@ -311,7 +305,7 @@ def _inject_hook_value(content, hook_name, hook_value, append):
             else:
                 new_val = "[{}, {}]".format(hook_value, existing)
 
-        return content[:match.start()] + prefix + new_val + content[match.end():]
+        return content[: match.start()] + prefix + new_val + content[match.end() :]
     else:
         # Hook not found — append at end
         new_line = "\n{} = {}\n".format(hook_name, hook_value)

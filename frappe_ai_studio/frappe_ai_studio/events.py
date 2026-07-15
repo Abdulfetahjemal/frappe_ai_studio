@@ -3,8 +3,6 @@
 
 from __future__ import unicode_literals
 
-import frappe
-
 
 def on_doc_update(doc, method):
     """Example doc event hook — can be wired via hooks.py if needed."""

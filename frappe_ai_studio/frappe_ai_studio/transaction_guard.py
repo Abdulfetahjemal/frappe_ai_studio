@@ -13,8 +13,6 @@ import contextlib
 import json
 
 import frappe
-from frappe import _
-
 
 # ---------------------------------------------------------------------------
 # Dry-run context manager
@@ -39,11 +37,15 @@ class DryRunContext:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        # Always roll back to the savepoint
-        frappe.db.sql("ROLLBACK TO SAVEPOINT {}".format(self.label))
-        self.rolled_back = True
-        # Suppress exceptions so the caller sees a clean result
-        return True
+        # Always roll back to the savepoint, even on error.
+        try:
+            frappe.db.sql("ROLLBACK TO SAVEPOINT {}".format(self.label))
+        finally:
+            self.rolled_back = True
+        # Do NOT suppress exceptions — a failure inside the block must surface
+        # to the caller. Swallowing it previously made failed dry-runs look
+        # like they passed.
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +72,7 @@ class MigrationGuard:
 
     def validate(self):
         """Run linting and dry-run on all pending changes."""
-        from frappe_ai_studio.frappe_ai_studio.agent_orchestrator import _lint_changes, _dry_run_changes
+        from frappe_ai_studio.frappe_ai_studio.agent_orchestrator import _dry_run_changes, _lint_changes
 
         if not self.pending_changes:
             return True

@@ -31,9 +31,7 @@ class TestContextEngine(unittest.TestCase):
 
         # Set up frappe mock
         frappe_mock = type(sys)("frappe")
-        frappe_mock.get_app_path = lambda app, *parts: os.path.join(
-            self.apps_path, app, app, *parts
-        )
+        frappe_mock.get_app_path = lambda app, *parts: os.path.join(self.apps_path, app, app, *parts)
         utils_mod = type(sys)("utils")
         utils_mod.get_bench_path = lambda: self.bench_path
         frappe_mock.utils = utils_mod
@@ -41,16 +39,29 @@ class TestContextEngine(unittest.TestCase):
         cache_mod.set_value = lambda k, v: None
         cache_mod.get_value = lambda k: None
         frappe_mock.cache = lambda: cache_mod
+        # Site/db context used by build_context.
+        local_mod = type(sys)("local")
+        local_mod.site = "test.local"
+        frappe_mock.local = local_mod
+        frappe_mock.conf = {}
+        frappe_mock.get_installed_apps = lambda: ["frappe", "erpnext", "test_app"]
+        frappe_mock.get_all = lambda *a, **k: []
+        db_mod = type(sys)("db")
+        db_mod.sql_list = lambda *a, **k: []
+        db_mod.sql = lambda *a, **k: []
+        frappe_mock.db = db_mod
         sys.modules["frappe"] = frappe_mock
         sys.modules["frappe.utils"] = utils_mod
 
         # Import after mock is set up
         import frappe_ai_studio.frappe_ai_studio.context_engine as ce_mod
+
         importlib.reload(ce_mod)
         self.ce = ce_mod
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def test_list_installed_apps(self):

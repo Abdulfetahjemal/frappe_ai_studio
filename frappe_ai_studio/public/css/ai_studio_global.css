@@ -1,37 +1,71 @@
-/* AI Studio Global Command Palette Styles */
+/* AI Studio Global Command Palette */
 
 .ai-studio-palette-overlay {
     position: fixed;
     inset: 0;
     background: rgba(0, 0, 0, 0.45);
-    z-index: 9999;
+    backdrop-filter: blur(2px);
+    z-index: 1050;
     display: flex;
     align-items: flex-start;
     justify-content: center;
-    padding-top: 10vh;
+    padding-top: 12vh;
+    animation: as-palette-fade 0.12s ease-out;
+}
+
+@keyframes as-palette-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
 }
 
 .ai-studio-palette {
-    width: 640px;
-    max-width: 90vw;
-    background: var(--bg-color);
-    border-radius: 0.5rem;
-    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
+    width: 620px;
+    max-width: 92vw;
+    background: var(--modal-bg, var(--card-bg, #fff));
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
     overflow: hidden;
+    animation: as-palette-in 0.14s ease-out;
+}
+
+@keyframes as-palette-in {
+    from { transform: translateY(-8px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+.ai-studio-palette-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 18px;
+}
+.ai-studio-palette-head .fa {
+    color: var(--blue-500, #2490ef);
+    font-size: 15px;
 }
 
 .ai-studio-palette-input {
-    width: 100%;
-    padding: 1rem 1.25rem;
+    flex: 1;
     border: none;
     outline: none;
-    font-size: 1rem;
-    background: var(--bg-color);
+    font-size: 15px;
+    background: transparent;
     color: var(--text-color);
 }
+.ai-studio-palette-input::placeholder { color: var(--text-muted); }
 
-.ai-studio-palette-results {
-    max-height: 320px;
-    overflow-y: auto;
+.ai-studio-palette-hint {
     border-top: 1px solid var(--border-color);
+    padding: 8px 18px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+.ai-studio-palette-hint kbd {
+    background: var(--gray-100, rgba(0, 0, 0, 0.06));
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 10px;
+    font-family: var(--font-mono, monospace);
 }

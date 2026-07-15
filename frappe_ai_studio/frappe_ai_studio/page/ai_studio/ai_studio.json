@@ -11,7 +11,14 @@
  "name": "ai-studio",
  "owner": "Administrator",
  "page_name": "ai-studio",
- "roles": [],
+ "roles": [
+  {
+   "role": "System Manager"
+  },
+  {
+   "role": "AI Studio Manager"
+  }
+ ],
  "script": null,
  "standard": "Yes",
  "style": null,

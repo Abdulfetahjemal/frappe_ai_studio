@@ -18,9 +18,7 @@ class TestSchemaWizard(unittest.TestCase):
         self.tmp_dir = tempfile.mkdtemp()
 
         frappe_mock = type(sys)("frappe")
-        frappe_mock.get_app_path = lambda app, *parts: os.path.join(
-            self.tmp_dir, app, *parts
-        )
+        frappe_mock.get_app_path = lambda app, *parts: os.path.join(self.tmp_dir, app, *parts)
         frappe_mock._ = lambda x: x
         frappe_mock.db = type(sys)("db")
         frappe_mock.db.exists = lambda dt, dn: False
@@ -40,11 +38,13 @@ class TestSchemaWizard(unittest.TestCase):
         sys.modules["frappe.core.doctype.doctype.doctype"] = frappe_mock.core.doctype.doctype
 
         import frappe_ai_studio.frappe_ai_studio.schema_wizard as sw_mod
+
         importlib.reload(sw_mod)
         self.sw = sw_mod
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def test_create_doctype_writes_json(self):
@@ -60,9 +60,7 @@ class TestSchemaWizard(unittest.TestCase):
 
         app_path = os.path.join(self.tmp_dir, "test_app")
         os.makedirs(app_path, exist_ok=True)
-        sys.modules["frappe"].get_app_path = lambda app, *parts: os.path.join(
-            app_path, *parts
-        )
+        sys.modules["frappe"].get_app_path = lambda app, *parts: os.path.join(app_path, *parts)
         importlib.reload(self.sw)
 
         dt_folder = os.path.join(app_path, "doctype", "TestBook")

@@ -6,19 +6,23 @@ from __future__ import unicode_literals
 import json
 import unittest
 
-import frappe
+try:
+    from frappe_ai_studio.frappe_ai_studio.agent_orchestrator import (
+        STAGE_COMPLETED,
+        STAGE_FAILED,
+        STAGE_PENDING,
+        _extract_changes,
+        _lint_changes,
+        enqueue_generation_task,
+        get_generation_task_status,
+    )
 
-from frappe_ai_studio.frappe_ai_studio.agent_orchestrator import (
-    enqueue_generation_task,
-    get_generation_task_status,
-    _extract_changes,
-    _lint_changes,
-    STAGE_PENDING,
-    STAGE_COMPLETED,
-    STAGE_FAILED,
-)
+    HAS_FRAPPE = True
+except Exception:
+    HAS_FRAPPE = False
 
 
+@unittest.skipUnless(HAS_FRAPPE, "requires a live Frappe environment")
 class TestAgentOrchestrator(unittest.TestCase):
     def test_extract_changes_from_json_block(self):
         """Extract changes from a markdown JSON block."""
@@ -64,12 +68,13 @@ class TestAgentOrchestrator(unittest.TestCase):
 
     def test_enqueue_and_get_status(self):
         """Enqueue a task and verify its initial status.
-        
+
         This test requires a running Frappe site with the DocType installed.
         Skip if Frappe is not initialized.
         """
         try:
             import frappe
+
             frappe.local.site
         except (ImportError, AttributeError):
             self.skipTest("Frappe not initialized")

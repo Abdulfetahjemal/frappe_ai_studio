@@ -66,15 +66,24 @@ class TestIntegration(unittest.TestCase):
         cache_mod.set_value = lambda k, v: None
         cache_mod.get_value = lambda k: None
         frappe_mock.cache = lambda: cache_mod
-        frappe_mock.get_app_path = lambda app, *parts: os.path.join(
-            self.apps_path, app, app, *parts
-        )
+        frappe_mock.get_app_path = lambda app, *parts: os.path.join(self.apps_path, app, app, *parts)
+        local_mod = type(sys)("local")
+        local_mod.site = "test.local"
+        frappe_mock.local = local_mod
+        frappe_mock.conf = {}
+        frappe_mock.get_installed_apps = lambda: [self.target_app]
+        frappe_mock.get_all = lambda *a, **k: []
+        db_mod = type(sys)("db")
+        db_mod.sql_list = lambda *a, **k: []
+        db_mod.sql = lambda *a, **k: []
+        frappe_mock.db = db_mod
 
         sys.modules["frappe"] = frappe_mock
         sys.modules["frappe.utils"] = utils_mod
 
-        import frappe_ai_studio.frappe_ai_studio.writer as writer_mod
         import frappe_ai_studio.frappe_ai_studio.context_engine as ce_mod
+        import frappe_ai_studio.frappe_ai_studio.writer as writer_mod
+
         importlib.reload(writer_mod)
         importlib.reload(ce_mod)
         self.writer = writer_mod
@@ -82,13 +91,12 @@ class TestIntegration(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def test_full_workflow_write_validate_snapshot(self):
         code = "class Book:\n    def __init__(self, title):\n        self.title = title\n"
-        file_path = os.path.join(
-            self.apps_path, self.target_app, self.target_app, "book.py"
-        )
+        file_path = os.path.join(self.apps_path, self.target_app, self.target_app, "book.py")
         self.writer.safe_write(file_path, code)
 
         ok, msg = self.writer.validate_python_syntax(code)
@@ -101,7 +109,8 @@ class TestIntegration(unittest.TestCase):
         result = subprocess.run(
             ["git", "log", "--oneline"],
             cwd=os.path.join(self.apps_path, self.target_app),
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         self.assertIn("ai-studio: pre-change snapshot", result.stdout)
 
@@ -120,14 +129,17 @@ class TestIntegration(unittest.TestCase):
                 {"fieldname": "title", "fieldtype": "Data", "label": "Title", "reqd": 1},
                 {"fieldname": "author", "fieldtype": "Data", "label": "Author"},
                 {"fieldname": "isbn", "fieldtype": "Data", "label": "ISBN"},
-                {"fieldname": "status", "fieldtype": "Select", "label": "Status",
-                 "options": "Available\nIssued\nLost", "default": "Available"},
+                {
+                    "fieldname": "status",
+                    "fieldtype": "Select",
+                    "label": "Status",
+                    "options": "Available\nIssued\nLost",
+                    "default": "Available",
+                },
             ],
         }
 
-        dt_folder = os.path.join(
-            self.apps_path, self.target_app, self.target_app, "doctype", "LibraryBook"
-        )
+        dt_folder = os.path.join(self.apps_path, self.target_app, self.target_app, "doctype", "LibraryBook")
         os.makedirs(dt_folder, exist_ok=True)
         json_path = os.path.join(dt_folder, "LibraryBook.json")
 
@@ -139,9 +151,13 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(data["name"], "LibraryBook")
         self.assertEqual(len(data["fields"]), 4)
 
-        self.writer.update_json_file(json_path, {"fields": data["fields"] + [
-            {"fieldname": "published_date", "fieldtype": "Date", "label": "Published Date"}
-        ]})
+        self.writer.update_json_file(
+            json_path,
+            {
+                "fields": data["fields"]
+                + [{"fieldname": "published_date", "fieldtype": "Date", "label": "Published Date"}]
+            },
+        )
 
         with open(json_path) as f:
             updated = json.load(f)

@@ -1,12 +1,13 @@
 /**
  * AI Studio Global Command Palette
  *
- * Injected into every DocType via app_include_js.
- * Provides a floating Cmd+K / Ctrl+K palette to open AI Studio
- * or run quick agent actions from anywhere in the desk.
+ * Injected into the desk via app_include_js. A floating Cmd/Ctrl+K palette to
+ * jump into AI Studio or hand a prompt straight to the agent from anywhere.
  */
 
 frappe.provide('frappe.ai_studio');
+
+frappe.ai_studio.PENDING_PROMPT_KEY = 'ai_studio_pending_prompt';
 
 frappe.ai_studio.GlobalPalette = class GlobalPalette {
     constructor() {
@@ -16,22 +17,20 @@ frappe.ai_studio.GlobalPalette = class GlobalPalette {
 
     init() {
         document.addEventListener('keydown', (e) => {
-            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+            const key = (e.key || '').toLowerCase();
+            if ((e.metaKey || e.ctrlKey) && key === 'k') {
+                // Don't hijack when the user is typing in an input/textarea.
+                const tag = (document.activeElement && document.activeElement.tagName) || '';
+                if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
                 e.preventDefault();
                 this.toggle();
             }
-            if (e.key === 'Escape' && this.isOpen) {
-                this.close();
-            }
+            if (key === 'escape' && this.isOpen) this.close();
         });
     }
 
     toggle() {
-        if (this.isOpen) {
-            this.close();
-        } else {
-            this.open();
-        }
+        this.isOpen ? this.close() : this.open();
     }
 
     open() {
@@ -41,11 +40,16 @@ frappe.ai_studio.GlobalPalette = class GlobalPalette {
         const overlay = document.createElement('div');
         overlay.className = 'ai-studio-palette-overlay';
         overlay.innerHTML = `
-            <div class="ai-studio-palette">
-                <input type="text" class="ai-studio-palette-input" placeholder="Type a command or 'ask' to prompt the agent..." />
-                <div class="ai-studio-palette-results"></div>
-            </div>
-        `;
+            <div class="ai-studio-palette" role="dialog" aria-label="AI Studio command palette">
+                <div class="ai-studio-palette-head">
+                    <i class="fa fa-magic"></i>
+                    <input type="text" class="ai-studio-palette-input"
+                        placeholder="Ask the agent, or type 'studio' to open AI Studio…" />
+                </div>
+                <div class="ai-studio-palette-hint">
+                    Press <kbd>Enter</kbd> to send · <kbd>Esc</kbd> to close
+                </div>
+            </div>`;
         document.body.appendChild(overlay);
         this.overlay = overlay;
 
@@ -53,19 +57,15 @@ frappe.ai_studio.GlobalPalette = class GlobalPalette {
         input.focus();
 
         input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                const val = input.value.trim();
-                if (!val) return;
-                if (val.toLowerCase().startsWith('ask ')) {
-                    const prompt = val.slice(4);
-                    this.close();
-                    this.openStudioWithPrompt(prompt);
-                } else if (val.toLowerCase() === 'studio') {
-                    this.close();
-                    frappe.set_route('ai-studio');
-                } else {
-                    this.runQuickCommand(val);
-                }
+            if (e.key !== 'Enter') return;
+            const val = input.value.trim();
+            if (!val) return;
+            if (val.toLowerCase() === 'studio') {
+                this.close();
+                frappe.set_route('ai-studio');
+            } else {
+                const prompt = val.toLowerCase().startsWith('ask ') ? val.slice(4) : val;
+                this.openStudioWithPrompt(prompt);
             }
         });
 
@@ -84,23 +84,43 @@ frappe.ai_studio.GlobalPalette = class GlobalPalette {
     }
 
     openStudioWithPrompt(prompt) {
-        frappe.set_route('ai-studio');
-        // After route change, populate the input (best-effort)
-        setTimeout(() => {
-            const app = frappe.ai_studio && frappe.ai_studio.page;
-            if (app && app._instance && app._instance.refs) {
-                // Vue 3 exposed refs won't be directly available; rely on global event or next tick
-            }
-        }, 800);
-    }
-
-    runQuickCommand(cmd) {
-        frappe.show_alert(`Quick command: ${cmd}`);
+        // Stash the prompt so the AI Studio page can pick it up on load.
+        try {
+            sessionStorage.setItem(frappe.ai_studio.PENDING_PROMPT_KEY, prompt);
+        } catch (e) {
+            // sessionStorage may be unavailable; fall back to an in-memory value.
+            frappe.ai_studio._pending_prompt = prompt;
+        }
         this.close();
+
+        // If the studio is already open, populate immediately.
+        if (frappe.get_route_str() === 'ai-studio' && frappe.ai_studio.page) {
+            frappe.ai_studio.consume_pending_prompt();
+        } else {
+            frappe.set_route('ai-studio');
+        }
     }
 };
 
-// Initialise once Frappe is ready
+// Called by the AI Studio page once it has initialised.
+frappe.ai_studio.consume_pending_prompt = function () {
+    let prompt = frappe.ai_studio._pending_prompt || null;
+    try {
+        prompt = prompt || sessionStorage.getItem(frappe.ai_studio.PENDING_PROMPT_KEY);
+        sessionStorage.removeItem(frappe.ai_studio.PENDING_PROMPT_KEY);
+    } catch (e) {
+        /* ignore */
+    }
+    frappe.ai_studio._pending_prompt = null;
+
+    const page = frappe.ai_studio.page;
+    if (prompt && page && page.prompt_input) {
+        page.prompt_input.val(prompt);
+        if (page.autogrow) page.autogrow();
+        page.prompt_input.focus();
+    }
+};
+
 $(document).on('frappe-ready', () => {
     frappe.ai_studio.palette = new frappe.ai_studio.GlobalPalette();
 });

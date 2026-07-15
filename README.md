@@ -21,10 +21,15 @@ An AI-powered developer agent for the [Frappe Framework](https://frappeframework
 ## Installation
 
 ```bash
-bench get-app https://github.com/your-org/frappe-ai-studio.git
+bench get-app https://github.com/codepointcreatives/frappe_ai_studio.git
 bench --site your-site.local install-app frappe_ai_studio
 bench --site your-site.local migrate
 ```
+
+> **Access control:** AI Studio can write code, run bench commands and modify
+> schema. All endpoints are restricted to the **System Manager** and
+> **AI Studio Manager** roles. The `AI Studio Manager` role is created
+> automatically on install so you can grant access without full admin rights.
 
 ## Setup
 
@@ -79,8 +84,17 @@ Core app files are never modified directly.
 ## Testing
 
 ```bash
-cd frappe_ai_studio
-python -m unittest discover -s frappe_ai_studio/tests -p "test_*.py" -v
+# From the repository root:
+python -m unittest discover -s frappe_ai_studio/frappe_ai_studio/tests -t . -p "test_*.py" -v
+```
+
+Pure-logic tests (security sanitizer, path-traversal guard, writer, change
+extraction) run without a Frappe install; tests that need a live site are
+skipped automatically. Linting/formatting is enforced with `ruff`:
+
+```bash
+ruff check frappe_ai_studio
+ruff format --check frappe_ai_studio
 ```
 
 ## License
