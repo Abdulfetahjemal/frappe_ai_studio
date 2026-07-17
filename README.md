@@ -44,8 +44,19 @@ bench --site your-site.local migrate
 1. **Select a target app** from the dropdown (e.g., your custom app or `erpnext` for core customizations).
 2. **Type a prompt**, e.g.:
    > "Create a DocType called Library Member with fields for name, email, phone, and membership status"
-3. **Review the diff** — The AI generates a preview of all changes before applying.
-4. **Confirm** — Click Apply to execute changes. For custom apps, a git snapshot is taken automatically.
+3. **Review the plan** — With **Plan first** enabled (default), the agent returns a step-by-step plan with per-step risk levels. Nothing is generated until you **Approve** it.
+4. **Review the diff** — After approval the AI generates the changes and previews them.
+5. **Deploy** — Click Deploy to execute. **High-impact operations** (app scaffolding, bench commands, permission/role changes, workflows, core-app edits) require an explicit confirmation before they run. For custom apps a git snapshot is taken automatically.
+
+### Approval flow
+
+```
+Prompt → Plan → [you approve the plan] → Generate → Validate → Staged
+      → [you Deploy; high-risk changes need explicit confirmation] → Applied
+```
+
+Planning mode can be toggled off per-message to go straight to generation; the
+staged-changes Deploy gate (and high-risk confirmation) always applies.
 
 ### Customizing Core Apps
 

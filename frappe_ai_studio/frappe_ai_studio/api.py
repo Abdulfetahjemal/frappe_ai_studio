@@ -488,6 +488,44 @@ The user must explicitly approve (Deploy) or reject (Rollback) the changes.
 """
 
 
+PLAN_SYSTEM_PROMPT = """You are a senior Frappe/ERPNext solution architect operating in PLANNING mode.
+
+Do NOT write any code or emit a changes[] payload. Produce a concise, reviewable
+IMPLEMENTATION PLAN that a human will approve before you build anything.
+
+Analyse the request against the provided bench context and return ONLY a JSON object
+wrapped in a ```json block with this exact shape:
+
+```json
+{
+  "summary": "One or two sentences describing the overall approach.",
+  "target_app": "app the work lands in (or the app to be created)",
+  "steps": [
+    {
+      "step": 1,
+      "action": "create_app | create_doctype | workflow | report | permission | ... (the change type)",
+      "title": "Short human title, e.g. 'Scaffold library_management app'",
+      "detail": "What exactly will be done and why.",
+      "risk": "low | medium | high",
+      "requires_approval": true
+    }
+  ],
+  "risks": ["Any notable risks, destructive actions, or prerequisites."],
+  "assumptions": ["Anything you assumed because it was unspecified."]
+}
+```
+
+Guidance:
+- Order steps by dependency (app -> modules -> doctypes -> scripts -> workflows ->
+  reports/dashboards -> permissions -> workspace).
+- Mark bench operations (create_app, install_app, run_bench), permission/role changes,
+  workflow activation, and any core-app (frappe/erpnext) edits as "risk": "high" and
+  "requires_approval": true.
+- Keep it tight: one step per meaningful artefact. No code, no SQL, no file contents.
+- If the request is trivial or purely a question, return a single step summarising the answer.
+"""
+
+
 # ---------------------------------------------------------------------------
 # LLM call implementations
 # ---------------------------------------------------------------------------
@@ -1090,8 +1128,8 @@ def execute_prompt(
     _guard()
     if user_prompt and len(user_prompt) > MAX_PROMPT_CHARS:
         frappe.throw(_("Prompt exceeds maximum length of {0} characters").format(MAX_PROMPT_CHARS))
-    if prompt_name == "__direct__":
-        system = DEFAULT_SYSTEM_PROMPT
+    if prompt_name in ("__direct__", "__plan__"):
+        system = PLAN_SYSTEM_PROMPT if prompt_name == "__plan__" else DEFAULT_SYSTEM_PROMPT
         user = user_prompt or ""
         cfg = _get_llm_config(provider=provider, model=model, temperature=temperature)
         model = model or cfg["model"]
@@ -1163,9 +1201,18 @@ def execute_prompt(
 
 @frappe.whitelist()
 def execute_prompt_async(
-    user_prompt, target_app=None, provider=None, model=None, temperature=None, conversation_history=None
+    user_prompt,
+    target_app=None,
+    provider=None,
+    model=None,
+    temperature=None,
+    conversation_history=None,
+    planning=False,
 ):
     """Enqueue an AI generation task and return the task ID immediately.
+
+    When ``planning`` is truthy the task first produces a plan and pauses for
+    user approval (approve_plan) before generating or executing anything.
 
     The frontend should listen for 'ai_generation_progress' realtime events
     or poll get_generation_task_status().
@@ -1175,6 +1222,7 @@ def execute_prompt_async(
         frappe.throw(_("Prompt exceeds maximum length of {0} characters").format(MAX_PROMPT_CHARS))
     from frappe_ai_studio.frappe_ai_studio.agent_orchestrator import enqueue_generation_task
 
+    planning = str(planning).lower() in ("1", "true", "yes")
     task_name = enqueue_generation_task(
         user_prompt=user_prompt,
         target_app=target_app,
@@ -1182,8 +1230,35 @@ def execute_prompt_async(
         model=model,
         temperature=temperature,
         conversation_history=conversation_history,
+        planning=planning,
     )
     return {"status": "queued", "task_id": task_name}
+
+
+@frappe.whitelist()
+def approve_plan(task_name, provider=None, model=None, temperature=None, conversation_history=None):
+    """Approve a generated plan and begin implementing it."""
+    _guard()
+    _audit("approve_plan", task=task_name)
+    from frappe_ai_studio.frappe_ai_studio.agent_orchestrator import approve_plan as _approve_plan
+
+    return _approve_plan(
+        task_name,
+        provider=provider,
+        model=model,
+        temperature=temperature,
+        conversation_history=conversation_history,
+    )
+
+
+@frappe.whitelist()
+def reject_plan(task_name):
+    """Reject a generated plan; nothing is implemented."""
+    _guard()
+    _audit("reject_plan", task=task_name)
+    from frappe_ai_studio.frappe_ai_studio.agent_orchestrator import reject_plan as _reject_plan
+
+    return _reject_plan(task_name)
 
 
 @frappe.whitelist()
@@ -1947,13 +2022,17 @@ def _apply_workspace_shortcut_remove(change):
 
 
 @frappe.whitelist()
-def approve_task(task_name):
-    """Approve and deploy a completed AI Generation Task."""
+def approve_task(task_name, confirm_high_risk=False):
+    """Approve and deploy a completed AI Generation Task.
+
+    High-risk changes require ``confirm_high_risk`` to be truthy, otherwise the
+    deploy is refused with the list of high-impact items so the UI can confirm.
+    """
     _guard()
-    _audit("approve_task", task=task_name)
+    _audit("approve_task", task=task_name, confirm_high_risk=confirm_high_risk)
     from frappe_ai_studio.frappe_ai_studio.agent_orchestrator import approve_and_deploy
 
-    return approve_and_deploy(task_name)
+    return approve_and_deploy(task_name, confirm_high_risk=confirm_high_risk)
 
 
 @frappe.whitelist()

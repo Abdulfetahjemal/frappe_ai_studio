@@ -13,9 +13,14 @@
   "progress_percent",
   "current_stage",
   "column_break_1",
+  "planning_mode",
+  "risk_level",
+  "requires_approval",
   "started_at",
   "completed_at",
   "duration_seconds",
+  "section_plan",
+  "plan",
   "section_break_1",
   "ai_response",
   "changes_payload",
@@ -39,7 +44,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "Pending\nIn Progress\nLinting\nTesting\nCompleted\nFailed\nRolled Back",
+   "options": "Pending\nPlanning\nAwaiting Approval\nIn Progress\nLinting\nTesting\nCompleted\nFailed\nRolled Back",
    "reqd": 1
   },
   {
@@ -58,6 +63,25 @@
    "fieldtype": "Column Break"
   },
   {
+   "default": "0",
+   "fieldname": "planning_mode",
+   "fieldtype": "Check",
+   "label": "Planning Mode"
+  },
+  {
+   "fieldname": "risk_level",
+   "fieldtype": "Data",
+   "label": "Risk Level",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "requires_approval",
+   "fieldtype": "Check",
+   "label": "Requires Approval",
+   "read_only": 1
+  },
+  {
    "fieldname": "started_at",
    "fieldtype": "Datetime",
    "label": "Started At"
@@ -71,6 +95,17 @@
    "fieldname": "duration_seconds",
    "fieldtype": "Float",
    "label": "Duration (seconds)"
+  },
+  {
+   "fieldname": "section_plan",
+   "fieldtype": "Section Break",
+   "label": "Plan"
+  },
+  {
+   "fieldname": "plan",
+   "fieldtype": "Code",
+   "label": "Plan",
+   "options": "JSON"
   },
   {
    "fieldname": "section_break_1",

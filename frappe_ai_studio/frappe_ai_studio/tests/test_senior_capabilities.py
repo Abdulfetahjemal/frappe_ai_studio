@@ -93,5 +93,46 @@ class TestReadonlySQL(unittest.TestCase):
         self.assertFalse(ok)
 
 
+class TestRiskClassification(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # risk.py has no frappe dependency, but import cleanly regardless.
+        from frappe_ai_studio.frappe_ai_studio import risk
+
+        cls.risk = risk
+
+    def test_high_risk_types(self):
+        for ctype in ("create_app", "install_app", "run_bench", "role", "permission", "workflow"):
+            self.assertEqual(self.risk.classify_change_risk({"type": ctype}), self.risk.HIGH, ctype)
+
+    def test_low_risk_types(self):
+        for ctype in ("custom_field", "property_setter", "notification", "number_card"):
+            self.assertEqual(self.risk.classify_change_risk({"type": ctype}), self.risk.LOW, ctype)
+
+    def test_hooks_write_is_high(self):
+        change = {"type": "write", "relative_path": "myapp/hooks.py", "content": ""}
+        self.assertEqual(self.risk.classify_change_risk(change), self.risk.HIGH)
+
+    def test_core_app_bumps_to_high(self):
+        change = {"type": "custom_field", "doctype": "Sales Invoice"}
+        self.assertEqual(self.risk.classify_change_risk(change, app_name="erpnext"), self.risk.HIGH)
+
+    def test_summary_requires_approval(self):
+        changes = [
+            {"type": "custom_field", "doctype": "X"},
+            {"type": "create_app", "app_name": "y"},
+        ]
+        summary = self.risk.summarize_risk(changes)
+        self.assertEqual(summary["level"], self.risk.HIGH)
+        self.assertTrue(summary["requires_approval"])
+        self.assertEqual(len(summary["high_risk"]), 1)
+        self.assertEqual(summary["counts"]["high"], 1)
+
+    def test_summary_all_low(self):
+        summary = self.risk.summarize_risk([{"type": "custom_field", "doctype": "X"}])
+        self.assertEqual(summary["level"], self.risk.LOW)
+        self.assertFalse(summary["requires_approval"])
+
+
 if __name__ == "__main__":
     unittest.main()

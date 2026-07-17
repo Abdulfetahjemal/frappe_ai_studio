@@ -30,6 +30,8 @@ class AIGenerationTask(Document):
                     "progress_percent": self.progress_percent,
                     "current_stage": self.current_stage,
                     "error_trace": self.error_trace,
+                    "risk_level": self.risk_level,
+                    "requires_approval": self.requires_approval,
                     "completed_at": str(self.completed_at) if self.completed_at else None,
                 },
                 user=self.owner,
@@ -38,25 +40,58 @@ class AIGenerationTask(Document):
             # Socketio may not be available in all environments
             pass
 
+    _VALID_STATUSES = (
+        "Pending",
+        "Planning",
+        "Awaiting Approval",
+        "In Progress",
+        "Linting",
+        "Testing",
+        "Completed",
+        "Failed",
+        "Rolled Back",
+    )
+
     def set_stage(self, stage, percent):
         """Update stage and progress atomically."""
         self.current_stage = stage
         self.progress_percent = percent
-        self.status = (
-            stage
-            if stage in ("Pending", "In Progress", "Linting", "Testing", "Completed", "Failed", "Rolled Back")
-            else self.status
-        )
+        self.status = stage if stage in self._VALID_STATUSES else self.status
+        self.save(ignore_permissions=True)
+        frappe.db.commit()
+
+    def set_plan_ready(self, plan):
+        """Store the generated plan and pause for user approval."""
+        self.status = "Awaiting Approval"
+        self.current_stage = "Awaiting Approval"
+        self.progress_percent = 30
+        self.plan = plan
         self.save(ignore_permissions=True)
         frappe.db.commit()
 
     def set_success(self, ai_response, changes_payload):
-        """Mark task as completed successfully."""
+        """Mark task as completed successfully and record the risk summary."""
         self.status = "Completed"
         self.progress_percent = 100
         self.current_stage = "Completed"
         self.ai_response = ai_response
         self.changes_payload = changes_payload
+
+        # Compute the risk summary of the staged changes so the frontend can
+        # require explicit confirmation for high-impact operations.
+        try:
+            import json
+
+            from frappe_ai_studio.frappe_ai_studio.risk import summarize_risk
+
+            changes = json.loads(changes_payload) if changes_payload else []
+            summary = summarize_risk(changes, app_name=self.target_app or None)
+            self.risk_level = summary["level"]
+            self.requires_approval = 1 if summary["requires_approval"] else 0
+        except Exception:
+            self.risk_level = "low"
+            self.requires_approval = 0
+
         self.completed_at = frappe.utils.now()
         if self.started_at:
             self.duration_seconds = (

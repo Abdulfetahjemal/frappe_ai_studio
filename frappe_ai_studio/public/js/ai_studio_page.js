@@ -32,6 +32,7 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
         this.loading = false;
         this.pollInterval = null;
         this.current_task = null;
+        this.planning_enabled = true;
 
         this.setup_page();
         this.load_settings();
@@ -118,7 +119,13 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
                             <textarea class="prompt-input" rows="1" placeholder="Describe what you want to build…"></textarea>
                             <button class="btn btn-primary as-send-btn btn-send"><i class="fa fa-paper-plane"></i></button>
                         </div>
-                        <div class="as-composer-hint">Enter to send · Shift+Enter for a new line</div>
+                        <div class="as-composer-foot">
+                            <label class="as-plan-toggle" title="Produce a plan for your approval before generating changes">
+                                <input type="checkbox" class="plan-mode-check" checked>
+                                <i class="fa fa-list-ol"></i> Plan first, then implement on approval
+                            </label>
+                            <span class="as-composer-hint">Enter to send · Shift+Enter for a new line</span>
+                        </div>
                     </div>
                 </section>
             </div>
@@ -207,6 +214,9 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
 
         this.wrapper.find('.btn-save-settings').on('click', () => this.save_settings());
         this.wrapper.find('.btn-clear-chat').on('click', () => this.clear_chat());
+        this.wrapper.find('.plan-mode-check').on('change', (e) => {
+            this.planning_enabled = e.target.checked;
+        });
     }
 
     autogrow() {
@@ -444,6 +454,7 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
         this.messages = [];
         this.conversation_history = [];
         this.wrapper.find('.as-action-bar').remove();
+        this.wrapper.find('.as-plan-card').remove();
         this.hide_pipeline();
         this.set_send_state(false);
         this.chat_container.empty();
@@ -467,6 +478,7 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
         this.autogrow();
         this.set_send_state(true);
         this.wrapper.find('.as-action-bar').remove();
+        this.wrapper.find('.as-plan-card').remove();
         this.show_typing();
         this.set_pipeline('Pending');
 
@@ -480,6 +492,7 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
                     temperature: this.temperature,
                     target_app: this.target_app,
                     conversation_history: JSON.stringify(this.conversation_history),
+                    planning: this.planning_enabled ? 1 : 0,
                 },
             });
             if (r.message && r.message.status === 'queued') {
@@ -525,8 +538,18 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
 
     update_task_status(data, originalPrompt) {
         const status = data.status;
-        if (['Pending', 'In Progress', 'Linting', 'Testing'].includes(status)) {
-            this.set_pipeline(status);
+        if (['Pending', 'Planning', 'In Progress', 'Linting', 'Testing'].includes(status)) {
+            this.set_pipeline(status === 'Planning' ? 'Pending' : status);
+            if (status === 'Planning') this.send_btn.attr('title', 'Planning…');
+            return;
+        }
+
+        if (status === 'Awaiting Approval') {
+            this.stop_polling();
+            this.remove_typing();
+            this.hide_pipeline();
+            this.set_send_state(false);
+            this.render_plan(data.plan, data.task_id, originalPrompt);
             return;
         }
 
@@ -541,7 +564,7 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
                 this.current_task = data;
                 const has_changes = !!(data.changes_payload && data.changes_payload !== 'null');
                 if (has_changes) {
-                    this.show_action_bar(data.task_id);
+                    this.show_action_bar(data);
                 } else {
                     this.hide_pipeline();
                 }
@@ -570,11 +593,123 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
         }
     }
 
-    show_action_bar(taskId) {
+    risk_badge(level) {
+        const map = { high: 'as-risk-high', medium: 'as-risk-med', low: 'as-risk-low' };
+        return `<span class="as-risk ${map[level] || 'as-risk-low'}">${(level || 'low').toUpperCase()}</span>`;
+    }
+
+    // ------------------------------------------------------------- plan review
+    render_plan(plan, taskId, originalPrompt) {
+        this.wrapper.find('.as-plan-card').remove();
+        plan = plan || { summary: '', steps: [] };
+        const steps = plan.steps || [];
+
+        let stepsHtml = '';
+        if (steps.length) {
+            stepsHtml =
+                '<ol class="as-plan-steps">' +
+                steps
+                    .map((s) => {
+                        const title = frappe.utils.escape_html(s.title || s.action || 'Step');
+                        const detail = frappe.utils.escape_html(s.detail || '');
+                        return `<li><div class="as-plan-step-head">${title} ${this.risk_badge(s.risk)}</div>${detail ? `<div class="as-plan-step-detail">${detail}</div>` : ''}</li>`;
+                    })
+                    .join('') +
+                '</ol>';
+        } else {
+            stepsHtml = `<div class="as-plan-summary">${frappe.utils.escape_html(plan.summary || 'No structured plan returned.')}</div>`;
+        }
+
+        const risks = (plan.risks || []).length
+            ? `<div class="as-plan-risks"><i class="fa fa-exclamation-triangle"></i> ${plan.risks.map((r) => frappe.utils.escape_html(r)).join(' · ')}</div>`
+            : '';
+        const summary = steps.length && plan.summary
+            ? `<div class="as-plan-summary">${frappe.utils.escape_html(plan.summary)}</div>`
+            : '';
+
+        const card = $(`
+            <div class="as-plan-card">
+                <div class="as-plan-title"><i class="fa fa-list-ol"></i> Proposed plan — review &amp; approve before anything is built</div>
+                ${summary}
+                ${stepsHtml}
+                ${risks}
+                <div class="as-plan-actions">
+                    <button class="btn btn-sm btn-success btn-plan-approve"><i class="fa fa-check"></i> Approve &amp; implement</button>
+                    <button class="btn btn-sm btn-default btn-plan-reject"><i class="fa fa-times"></i> Reject</button>
+                </div>
+            </div>
+        `).insertBefore(this.wrapper.find('.ai-studio-composer'));
+
+        card.find('.btn-plan-approve').on('click', () => {
+            card.remove();
+            this.approve_plan(taskId, originalPrompt);
+        });
+        card.find('.btn-plan-reject').on('click', () => {
+            card.remove();
+            this.reject_plan(taskId);
+        });
+    }
+
+    async approve_plan(taskId, originalPrompt) {
+        this.append_message('system', 'Plan approved — implementing…');
+        this.set_send_state(true);
+        this.show_typing();
+        this.set_pipeline('In Progress');
+        try {
+            const r = await frappe.call({
+                method: 'frappe_ai_studio.frappe_ai_studio.api.approve_plan',
+                args: {
+                    task_name: taskId,
+                    provider: this.current_provider,
+                    model: this.current_model,
+                    temperature: this.temperature,
+                    conversation_history: JSON.stringify(this.conversation_history),
+                },
+            });
+            if (r.message && r.message.status === 'approved') {
+                // Resume tracking the same task through implementation.
+                this.pollInterval = setInterval(
+                    () => this.poll_task_status(taskId, originalPrompt),
+                    2500
+                );
+            } else {
+                this.fail_turn('Could not start implementation.');
+            }
+        } catch (err) {
+            this.fail_turn('Approve failed: ' + (err.message || 'Error'));
+        }
+    }
+
+    async reject_plan(taskId) {
+        try {
+            await frappe.call({
+                method: 'frappe_ai_studio.frappe_ai_studio.api.reject_plan',
+                args: { task_name: taskId },
+            });
+            frappe.show_alert({ message: 'Plan rejected', indicator: 'orange' });
+            this.append_message('system', 'Plan rejected — nothing was built.');
+        } catch (err) {
+            this.append_message('system', 'Reject failed: ' + (err.message || 'Error'));
+        }
+    }
+
+    show_action_bar(data) {
+        const taskId = data.task_id;
+        const risk = data.risk || { level: 'low', requires_approval: false, high_risk: [] };
         this.wrapper.find('.as-action-bar').remove();
+
+        const highNote = risk.requires_approval
+            ? `<div class="as-ab-risknote"><i class="fa fa-exclamation-triangle"></i> High-impact: ${risk.high_risk
+                  .map((h) => frappe.utils.escape_html(h.label))
+                  .join(', ')} — you'll be asked to confirm.</div>`
+            : '';
+
         const bar = $(`
             <div class="as-action-bar">
-                <span class="as-ab-label"><i class="fa fa-shield"></i> Changes are staged and validated. Review, then deploy.</span>
+                <div class="as-ab-main">
+                    <span class="as-ab-label"><i class="fa fa-shield"></i> Changes staged &amp; validated ${this.risk_badge(risk.level)}</span>
+                    ${highNote}
+                </div>
                 <button class="btn btn-xs btn-default btn-preview"><i class="fa fa-eye"></i> Preview</button>
                 <button class="btn btn-xs btn-success btn-approve"><i class="fa fa-rocket"></i> Deploy</button>
                 <button class="btn btn-xs btn-danger btn-reject"><i class="fa fa-times"></i> Discard</button>
@@ -582,22 +717,41 @@ frappe.ai_studio.AIStudioPage = class AIStudioPage {
         `).insertBefore(this.wrapper.find('.ai-studio-composer'));
 
         bar.find('.btn-preview').on('click', () => this.preview_changes());
-        bar.find('.btn-approve').on('click', () => {
-            this.approve_task(taskId);
-            bar.remove();
-        });
+        bar.find('.btn-approve').on('click', () => this.deploy_with_confirmation(data, bar));
         bar.find('.btn-reject').on('click', () => {
             this.reject_task(taskId);
             bar.remove();
         });
     }
 
+    deploy_with_confirmation(data, bar) {
+        const risk = data.risk || { requires_approval: false, high_risk: [] };
+        if (!risk.requires_approval) {
+            this.approve_task(data.task_id, false);
+            bar.remove();
+            return;
+        }
+        // High-impact: require explicit confirmation before executing.
+        const list = risk.high_risk
+            .map((h) => `<li><b>${frappe.utils.escape_html(h.type)}</b> — ${frappe.utils.escape_html(h.label)}</li>`)
+            .join('');
+        frappe.confirm(
+            `<div style="margin-bottom:8px;">This deployment performs <b>high-impact</b> operations that need your explicit approval:</div>
+             <ul style="margin-left:18px;">${list}</ul>
+             <div style="margin-top:8px;">Proceed?</div>`,
+            () => {
+                this.approve_task(data.task_id, true);
+                bar.remove();
+            }
+        );
+    }
+
     // --------------------------------------------------------- deploy/reject
-    async approve_task(taskId) {
+    async approve_task(taskId, confirmHighRisk) {
         try {
             const r = await frappe.call({
                 method: 'frappe_ai_studio.frappe_ai_studio.api.approve_task',
-                args: { task_name: taskId },
+                args: { task_name: taskId, confirm_high_risk: confirmHighRisk ? 1 : 0 },
             });
             if (r.message && r.message.status === 'deployed') {
                 frappe.show_alert({ message: 'Changes deployed', indicator: 'green' });

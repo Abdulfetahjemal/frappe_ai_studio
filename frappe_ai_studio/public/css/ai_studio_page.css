@@ -214,6 +214,48 @@
 :root[data-theme="dark"] .as-action-bar { background: rgba(36,144,239,0.1); border-color: rgba(36,144,239,0.3); }
 .as-action-bar .as-ab-label { flex: 1; color: var(--text-muted); }
 
+/* Risk badges */
+.as-risk {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 1px 6px;
+    border-radius: 10px;
+    vertical-align: middle;
+}
+.as-risk-high { background: var(--red-100, #fee2e2); color: var(--red-600, #dc2626); }
+.as-risk-med { background: var(--orange-100, #ffedd5); color: var(--orange-600, #ea580c); }
+.as-risk-low { background: var(--green-100, #dcfce7); color: var(--green-700, #15803d); }
+:root[data-theme="dark"] .as-risk-high { background: rgba(220,38,38,0.2); color: #fca5a5; }
+:root[data-theme="dark"] .as-risk-med { background: rgba(234,88,12,0.2); color: #fdba74; }
+:root[data-theme="dark"] .as-risk-low { background: rgba(21,128,61,0.2); color: #86efac; }
+
+/* Plan review card */
+.as-plan-card {
+    margin: 0 20px 14px;
+    padding: 14px 16px;
+    border: 1px solid var(--blue-200, #bcdcfb);
+    background: var(--blue-50, #f0f8ff);
+    border-radius: 10px;
+}
+:root[data-theme="dark"] .as-plan-card { background: rgba(36,144,239,0.08); border-color: rgba(36,144,239,0.3); }
+.as-plan-title { font-weight: 600; font-size: 13px; margin-bottom: 8px; }
+.as-plan-summary { font-size: 12px; color: var(--text-muted); margin-bottom: 10px; }
+.as-plan-steps { margin: 0 0 10px; padding-left: 20px; }
+.as-plan-steps li { margin-bottom: 8px; font-size: 12px; }
+.as-plan-step-head { font-weight: 600; }
+.as-plan-step-detail { color: var(--text-muted); margin-top: 2px; }
+.as-plan-risks {
+    font-size: 11px; color: var(--orange-700, #c2410c);
+    background: var(--orange-50, #fff7ed); border-radius: 6px; padding: 6px 8px; margin-bottom: 10px;
+}
+:root[data-theme="dark"] .as-plan-risks { background: rgba(234,88,12,0.12); color: #fdba74; }
+.as-plan-actions { display: flex; gap: 8px; }
+
+.as-ab-main { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.as-ab-risknote { font-size: 11px; color: var(--red-600, #dc2626); }
+
 /* Composer */
 .ai-studio-composer {
     border-top: 1px solid var(--border-color);
@@ -236,7 +278,18 @@
     font-family: inherit;
 }
 .as-send-btn { border-radius: 9px; min-width: 44px; height: 36px; }
-.as-composer-hint { font-size: 10px; color: var(--text-muted); margin-top: 6px; padding-left: 4px; }
+.as-composer-hint { font-size: 10px; color: var(--text-muted); }
+.as-composer-foot {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin-top: 8px; padding-left: 4px; flex-wrap: wrap;
+}
+.as-plan-toggle {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--text-color); cursor: pointer; margin: 0;
+    user-select: none;
+}
+.as-plan-toggle input { margin: 0; }
+.as-plan-toggle .fa { color: var(--blue-500, #2490ef); }
 
 /* Responsive */
 @media (max-width: 768px) {

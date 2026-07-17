@@ -19,6 +19,8 @@ from frappe import _
 # ---------------------------------------------------------------------------
 
 STAGE_PENDING = "Pending"
+STAGE_PLANNING = "Planning"
+STAGE_AWAITING_APPROVAL = "Awaiting Approval"
 STAGE_IN_PROGRESS = "In Progress"
 STAGE_LINTING = "Linting"
 STAGE_TESTING = "Testing"
@@ -28,9 +30,11 @@ STAGE_ROLLED_BACK = "Rolled Back"
 
 STAGE_PROGRESS = {
     STAGE_PENDING: 0,
-    STAGE_IN_PROGRESS: 10,
-    STAGE_LINTING: 40,
-    STAGE_TESTING: 70,
+    STAGE_PLANNING: 15,
+    STAGE_AWAITING_APPROVAL: 30,
+    STAGE_IN_PROGRESS: 45,
+    STAGE_LINTING: 60,
+    STAGE_TESTING: 80,
     STAGE_COMPLETED: 100,
     STAGE_FAILED: 0,
     STAGE_ROLLED_BACK: 0,
@@ -49,8 +53,13 @@ def enqueue_generation_task(
     temperature=None,
     prompt_name="__direct__",
     conversation_history=None,
+    planning=False,
 ):
     """Create an AI Generation Task and enqueue it for background processing.
+
+    When ``planning`` is true the task first produces a human-readable PLAN and
+    pauses at 'Awaiting Approval' — nothing is generated or executed until the
+    user approves the plan via ``approve_plan``.
 
     Returns the task document name so the frontend can poll or listen for
     realtime events.
@@ -66,12 +75,12 @@ def enqueue_generation_task(
             "status": STAGE_PENDING,
             "progress_percent": 0,
             "current_stage": STAGE_PENDING,
+            "planning_mode": 1 if planning else 0,
         }
     )
     task.insert(ignore_permissions=True)
     frappe.db.commit()
 
-    # Enqueue the background job on the "long" queue with a 5-minute timeout
     frappe.enqueue(
         method="frappe_ai_studio.frappe_ai_studio.agent_orchestrator._run_generation_pipeline",
         queue="long",
@@ -85,6 +94,7 @@ def enqueue_generation_task(
         temperature=temperature,
         prompt_name=prompt_name,
         conversation_history=conversation_history,
+        planning=planning,
     )
 
     return task.name
@@ -104,14 +114,56 @@ def _run_generation_pipeline(
     temperature,
     prompt_name,
     conversation_history,
+    planning=False,
+    approved_plan=None,
 ):
-    """Background worker: executes the full generation pipeline."""
+    """Background worker: executes the generation pipeline.
+
+    If ``planning`` is true and no ``approved_plan`` is supplied, only a PLAN is
+    produced and the task pauses at 'Awaiting Approval'. Once the user approves,
+    ``approve_plan`` re-enqueues this with the approved plan to implement it.
+    """
     task = frappe.get_doc("AI Generation Task", task_name)
     logger = frappe.logger("ai_studio")
-    logger.info("[AI Generation Task %s] Pipeline started", task_name)
+    logger.info("[AI Generation Task %s] Pipeline started (planning=%s)", task_name, planning)
 
-    task.started_at = frappe.utils.now()
+    if not task.started_at:
+        task.started_at = frappe.utils.now()
+
+    # -------------------------------------------------------------------
+    # Stage 0: Planning — produce a plan and pause for explicit approval.
+    # -------------------------------------------------------------------
+    if planning and not approved_plan:
+        task.set_stage(STAGE_PLANNING, STAGE_PROGRESS[STAGE_PLANNING])
+        try:
+            from frappe_ai_studio.frappe_ai_studio.api import execute_prompt
+
+            result = execute_prompt(
+                prompt_name="__plan__",
+                user_prompt=user_prompt,
+                target_app=target_app,
+                provider=provider,
+                model=model,
+                temperature=temperature,
+                conversation_history=conversation_history,
+            )
+            plan = _extract_plan(result.get("response", ""))
+            task.set_plan_ready(json.dumps(plan))
+            logger.info("[AI Generation Task %s] Plan ready — awaiting approval", task_name)
+        except Exception as e:
+            logger.error("[AI Generation Task %s] Planning failed: %s", task_name, str(e))
+            task.set_failed(frappe.get_traceback())
+        return
+
     task.set_stage(STAGE_IN_PROGRESS, STAGE_PROGRESS[STAGE_IN_PROGRESS])
+
+    # If an approved plan is supplied, instruct the model to implement it exactly.
+    effective_prompt = user_prompt
+    if approved_plan:
+        effective_prompt = (
+            "{}\n\n## APPROVED PLAN — implement EXACTLY these steps as a single "
+            "ordered changes[] array, in order:\n{}".format(user_prompt, approved_plan)
+        )
 
     # -------------------------------------------------------------------
     # Stage 1: LLM Call
@@ -121,7 +173,7 @@ def _run_generation_pipeline(
 
         result = execute_prompt(
             prompt_name=prompt_name,
-            user_prompt=user_prompt,
+            user_prompt=effective_prompt,
             target_app=target_app,
             provider=provider,
             model=model,
@@ -211,6 +263,37 @@ def _extract_changes(ai_response):
 
     # No structured change payload — this was a conversational answer.
     return None
+
+
+def _extract_plan(ai_response):
+    """Extract a structured plan from the planning LLM response.
+
+    Returns a dict: {"summary": str, "steps": [ {"step", "action", "risk",
+    "requires_approval", "detail"} ... ]}. Falls back to a single free-text
+    step if the model didn't return JSON.
+    """
+    import re
+
+    if not ai_response or not ai_response.strip():
+        return {"summary": "", "steps": []}
+
+    candidates = []
+    for m in re.finditer(r"```(?:json)?\s*\n([\s\S]*?)```", ai_response, re.IGNORECASE):
+        candidates.append(m.group(1).strip())
+    candidates.append(ai_response.strip())
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            payload = json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(payload, dict) and payload.get("steps"):
+            return payload
+
+    # Fallback: keep the prose as a single informational step.
+    return {"summary": ai_response.strip()[:2000], "steps": []}
 
 
 def _lint_changes(changes, target_app):
@@ -325,12 +408,71 @@ _dry_run_changes = _validate_changes
 
 
 @frappe.whitelist()
-def approve_and_deploy(task_name):
-    """Apply the validated changes for real (outside a dry-run transaction).
+def approve_plan(task_name, provider=None, model=None, temperature=None, conversation_history=None):
+    """Approve a generated plan and start implementing it.
+
+    Re-enqueues the generation pipeline with the approved plan so the model
+    produces the actual changes (which then still pass through validation and
+    the Deploy gate before anything executes).
+    """
+    from frappe_ai_studio.frappe_ai_studio.api import _guard
+
+    _guard()
+    task = frappe.get_doc("AI Generation Task", task_name)
+    if task.status != STAGE_AWAITING_APPROVAL:
+        frappe.throw(
+            _("Task must be in 'Awaiting Approval' state to approve. Current state: {0}").format(task.status)
+        )
+
+    task.set_stage(STAGE_IN_PROGRESS, STAGE_PROGRESS[STAGE_IN_PROGRESS])
+
+    frappe.enqueue(
+        method="frappe_ai_studio.frappe_ai_studio.agent_orchestrator._run_generation_pipeline",
+        queue="long",
+        timeout=300,
+        job_id=f"ai-gen-impl-{task.name}",
+        task_name=task.name,
+        user_prompt=task.user_request,
+        target_app=task.target_app or None,
+        provider=provider,
+        model=model,
+        temperature=temperature,
+        prompt_name="__direct__",
+        conversation_history=conversation_history,
+        planning=False,
+        approved_plan=task.plan,
+    )
+    return {"status": "approved", "task_id": task.name}
+
+
+@frappe.whitelist()
+def reject_plan(task_name):
+    """Reject a generated plan; nothing is implemented."""
+    from frappe_ai_studio.frappe_ai_studio.api import _guard
+
+    _guard()
+    task = frappe.get_doc("AI Generation Task", task_name)
+    if task.status != STAGE_AWAITING_APPROVAL:
+        frappe.throw(
+            _("Task must be in 'Awaiting Approval' state to reject. Current state: {0}").format(task.status)
+        )
+    task.set_rolled_back()
+    return {"status": "rolled_back"}
+
+
+@frappe.whitelist()
+def approve_and_deploy(task_name, confirm_high_risk=False):
+    """Apply the validated changes for real.
+
+    High-impact operations (app scaffolding, bench commands, permission/role
+    changes, workflows, core-app edits) must be explicitly confirmed:
+    ``confirm_high_risk`` must be truthy or the call is refused with the list of
+    high-risk items so the UI can prompt the user first.
 
     Called when the user clicks "Deploy" in the frontend.
     """
     from frappe_ai_studio.frappe_ai_studio.api import _guard
+    from frappe_ai_studio.frappe_ai_studio.risk import summarize_risk
 
     _guard()
     task = frappe.get_doc("AI Generation Task", task_name)
@@ -340,6 +482,19 @@ def approve_and_deploy(task_name):
     changes = json.loads(task.changes_payload) if task.changes_payload else []
     if not changes:
         frappe.throw(_("No changes to deploy"))
+
+    # Enforce explicit approval for high-risk changes before executing.
+    summary = summarize_risk(changes, app_name=task.target_app or None)
+    confirmed = str(confirm_high_risk).lower() in ("1", "true", "yes")
+    if summary["requires_approval"] and not confirmed:
+        labels = ", ".join(it["label"] for it in summary["high_risk"])
+        frappe.throw(
+            _(
+                "This deployment includes high-impact changes that need explicit "
+                "confirmation: {0}. Re-run Deploy with confirmation to proceed."
+            ).format(labels),
+            frappe.PermissionError if hasattr(frappe, "PermissionError") else None,
+        )
 
     try:
         from frappe_ai_studio.frappe_ai_studio.api import apply_ai_changes
@@ -378,11 +533,33 @@ def get_generation_task_status(task_name):
 
     _guard()
     task = frappe.get_doc("AI Generation Task", task_name)
+
+    plan = None
+    if task.plan:
+        try:
+            plan = json.loads(task.plan)
+        except (ValueError, TypeError):
+            plan = {"summary": task.plan, "steps": []}
+
+    risk = None
+    if task.changes_payload:
+        try:
+            from frappe_ai_studio.frappe_ai_studio.risk import summarize_risk
+
+            risk = summarize_risk(json.loads(task.changes_payload), app_name=task.target_app or None)
+        except Exception:
+            risk = None
+
     return {
         "task_id": task.name,
         "status": task.status,
         "progress_percent": task.progress_percent,
         "current_stage": task.current_stage,
+        "planning_mode": task.planning_mode,
+        "plan": plan,
+        "risk_level": task.risk_level,
+        "requires_approval": task.requires_approval,
+        "risk": risk,
         "ai_response": task.ai_response,
         "changes_payload": task.changes_payload,
         "error_trace": task.error_trace,
