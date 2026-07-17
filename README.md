@@ -8,6 +8,7 @@ An AI-powered developer agent for the [Frappe Framework](https://frappeframework
 
 ## Features
 
+- **Full project lifecycle (senior-developer mode)** — Scaffold a whole new app (`bench new-app`), create modules and DocTypes, wire business logic, design **Workflows**, build **Reports / Dashboard Charts / Number Cards**, secure it with **Roles & Permissions**, add **Notifications, Print Formats and Web Forms**, and surface everything in a purpose-built **Workspace** — all from natural language, applied atomically in dependency order.
 - **Natural Language Development** — Describe what you want in plain English and let the AI generate DocTypes, controllers, client scripts, and more.
 - **Multi-Provider LLM Support** — Works with OpenAI, Anthropic, Google Gemini, DeepSeek, Groq, Azure OpenAI, Cohere, Mistral, Together AI, Perplexity, OpenRouter, and Moonshot AI (Kimi).
 - **Core App Customization** — Safely customize Frappe and ERPNext using Custom Fields and Property Setters without modifying core files.
@@ -63,8 +64,27 @@ Core app files are never modified directly.
 | `context_engine.py` | Scans bench apps, indexes DocTypes, hooks, APIs into JSON context for the LLM |
 | `writer.py` | Secure file I/O, AST-based code injection, git snapshot/rollback |
 | `schema_wizard.py` | DocType JSON generation, database sync, bench orchestration |
-| `ai_studio_page.js` | Interactive frontend with chat, file browser, diff preview |
+| `builder.py` | Bench-level orchestration: scaffold apps (`bench new-app`), install apps, create modules |
+| `advanced_customization.py` | Senior-dev artefacts: Workflows, full Workspaces, Reports, Notifications, Dashboard Charts, Number Cards, Roles, Permissions, Print Formats, Web Forms |
+| `ai_studio_page.js` | Interactive frontend with chat, staged pipeline, diff preview |
 | `ai_studio_global.js` | Floating command palette injected into every DocType |
+
+### Supported change types
+
+The agent plans changes as an ordered `changes[]` array applied atomically:
+
+- **Bench:** `create_app`, `install_app`, `create_module`
+- **Code & schema:** `write`, `inject_method`, `update_json`, `create_doctype`, `sync_doctype`, `run_bench`
+- **Core-app customization:** `custom_field`, `property_setter`, `server_script`, `client_script`
+- **Workflow:** `workflow`, `workflow_state`, `workflow_action`
+- **Workspaces:** `create_workspace`, `workspace_link`(`_remove`), `workspace_shortcut`(`_remove`)
+- **Reporting & alerts:** `report`, `dashboard_chart`, `number_card`, `notification`
+- **Security & presentation:** `role`, `permission`, `print_format`, `web_form`
+
+Guardrails apply across all of them: role-gated endpoints, path-traversal
+containment, AST-sanitized server-side Python, **read-only-SELECT-only** Query
+Reports, atomic apply with git snapshot + rollback, and a side-effect-free
+validation stage before anything is deployed.
 
 ## Supported LLM Providers
 

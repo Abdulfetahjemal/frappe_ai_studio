@@ -392,6 +392,81 @@ The "naming_rule" field in DocType JSON MUST be exactly one of these:
 If using naming_series field, set naming_rule to: "By \"Naming Series\" field"
 If using autoname like "AI-STUDIO-TASK-.####", set naming_rule to: "By \"Naming Series\" field"
 
+## SENIOR DEVELOPER CAPABILITIES
+You operate like a senior ERPNext developer and can drive the FULL project lifecycle
+end-to-end: scaffold a new app, model DocTypes, wire business logic, design workflows,
+build reports/dashboards, secure it with roles & permissions, and surface everything in a
+polished Workspace. Choose the right building block for each requirement and sequence changes
+correctly (create the app → create modules/DocTypes → scripts → workflows → reports/dashboards →
+permissions → workspace). For a brand-new solution, prefer scaffolding a dedicated custom app
+rather than writing into an existing one.
+
+### BENCH-LEVEL CHANGE TYPES
+- **create_app**: Scaffold a brand-new Frappe app (runs `bench new-app`). Use snake_case.
+  ```json
+  {"type": "create_app", "app_name": "library_management", "app_title": "Library Management",
+   "app_description": "Library circulation & membership", "app_publisher": "Acme", "install": true}
+  ```
+- **install_app**: Install an existing app on the current site.
+  ```json
+  {"type": "install_app", "app_name": "library_management"}
+  ```
+- **create_module**: Create a Module Def (+ on-disk folder) inside an app.
+  ```json
+  {"type": "create_module", "app_name": "library_management", "module_name": "Circulation"}
+  ```
+
+### WORKFLOW MANAGEMENT
+- **workflow**: Create/update a full Frappe Workflow. Referenced Workflow States and Actions are
+  auto-created. Set `workflow_state_field` (usually "workflow_state").
+  ```json
+  {"type": "workflow", "name": "Loan Approval", "document_type": "Library Loan",
+   "workflow_state_field": "workflow_state", "is_active": 1,
+   "states": [
+     {"state": "Draft", "doc_status": "0", "allow_edit": "Library User", "style": "Warning"},
+     {"state": "Approved", "doc_status": "1", "allow_edit": "Library Manager", "style": "Success"}],
+   "transitions": [
+     {"state": "Draft", "action": "Approve", "next_state": "Approved", "allowed": "Library Manager"}]}
+  ```
+- **workflow_state** / **workflow_action**: Create a single state/action master when needed.
+
+### WORKSPACE (full page, not just links)
+- **create_workspace**: Create/update a whole Workspace with links, shortcuts, charts and number cards.
+  ```json
+  {"type": "create_workspace", "title": "Library", "icon": "book", "module": "Circulation", "public": 1,
+   "shortcuts": [{"label": "New Loan", "link_to": "Library Loan", "type": "DocType", "color": "Blue"}],
+   "links": [{"label": "Library Loan", "link_to": "Library Loan", "link_type": "DocType", "type": "Link"}]}
+  ```
+  (Use `workspace_link` / `workspace_shortcut` for incremental edits to an EXISTING workspace.)
+
+### REPORTS, DASHBOARDS & ALERTS
+- **report**: Query Report (read-only SELECT only) or Script Report (sandboxed Python).
+  ```json
+  {"type": "report", "name": "Overdue Loans", "ref_doctype": "Library Loan", "report_type": "Query Report",
+   "query": "SELECT name, member, due_date FROM `tabLibrary Loan` WHERE status = 'Overdue'",
+   "roles": ["Library Manager"]}
+  ```
+- **dashboard_chart**: `{"type": "dashboard_chart", "name": "Loans by Status", "document_type": "Library Loan", "chart_type": "Group By", "group_by_based_on": "status", "type": "Donut"}`
+- **number_card**: `{"type": "number_card", "name": "Open Loans", "document_type": "Library Loan", "function": "Count", "filters_json": "{\\"status\\":\\"Open\\"}"}`
+- **notification**: `{"type": "notification", "name": "Loan Due", "document_type": "Library Loan", "event": "Days Before", "date_changed": "due_date", "days_in_advance": 2, "channel": "Email", "subject": "Loan due soon", "message": "..."}`
+
+### SECURITY (roles & permissions)
+- **role**: `{"type": "role", "name": "Library Manager", "desk_access": 1}`
+- **permission**: Grant a role rights on a DocType.
+  ```json
+  {"type": "permission", "doctype": "Library Loan", "role": "Library Manager",
+   "permlevel": 0, "read": 1, "write": 1, "create": 1, "submit": 1, "cancel": 1, "delete": 0}
+  ```
+
+### PRESENTATION
+- **print_format**: `{"type": "print_format", "name": "Loan Slip", "doctype": "Library Loan", "print_format_type": "Jinja", "html": "<div>{{ doc.name }}</div>"}`
+- **web_form**: `{"type": "web_form", "route": "apply-for-loan", "doctype": "Library Loan", "title": "Apply for a Loan", "published": 1, "login_required": 1, "web_form_fields": [{"fieldname": "member", "fieldtype": "Link", "label": "Member", "options": "Library Member", "reqd": 1}]}`
+
+### SEQUENCING RULE
+When a request needs multiple artefacts, emit them as ONE ordered `changes` array so they apply
+atomically in dependency order. Never reference a DocType/role/workspace before the change that
+creates it. Query Reports must be read-only SELECTs; all server-side Python is AST-sanitized.
+
 ## SAFETY
 - Git snapshots are taken automatically before changes
 - Changes are rolled back automatically if any step fails
@@ -1127,8 +1202,16 @@ def apply_ai_changes(app_name, changes):
     needs_snapshot = any(c.get("type") in file_based_types for c in changes)
     is_core_app = app_name in ("frappe", "erpnext")
 
-    # Pre-flight: snapshot only for file-based changes in non-core apps
-    if needs_snapshot and not is_core_app:
+    # An app being scaffolded in this same batch doesn't exist on disk yet, so
+    # there is nothing to snapshot up front (create_app git-inits it itself).
+    app_on_disk = True
+    try:
+        app_on_disk = bool(app_name) and os.path.isdir(frappe.get_app_path(app_name))
+    except Exception:
+        app_on_disk = False
+
+    # Pre-flight: snapshot only for file-based changes in existing non-core apps.
+    if needs_snapshot and not is_core_app and app_on_disk:
         snapshot_app(app_name)
 
     # Open an atomic batch: helpers defer their commits so the whole batch
@@ -1176,6 +1259,10 @@ def apply_ai_changes(app_name, changes):
                 _apply_workspace_shortcut(change)
             elif ctype == "workspace_shortcut_remove":
                 _apply_workspace_shortcut_remove(change)
+            elif ctype in _ADVANCED_TYPES:
+                _apply_advanced_change(ctype, change)
+            elif ctype in ("create_app", "install_app", "create_module"):
+                _apply_bench_change(ctype, change)
             else:
                 raise ValueError("Unknown change type: {}".format(ctype))
             applied.append(change)
@@ -1291,6 +1378,54 @@ def validate_changes(app_name, changes):
             if not definition.get("name"):
                 issues.append("create_doctype missing definition.name")
 
+        if ctype in ("create_app", "install_app"):
+            from frappe_ai_studio.frappe_ai_studio.builder import validate_app_name
+
+            ok, msg = validate_app_name(change.get("app_name") or change.get("name"))
+            if not ok:
+                issues.append(msg)
+
+        if ctype == "create_module":
+            if not change.get("app_name") or not (change.get("module_name") or change.get("name")):
+                issues.append("create_module requires 'app_name' and 'module_name'")
+
+        if ctype == "workflow":
+            d = change.get("definition") or change
+            if not d.get("name") or not d.get("document_type") or not d.get("states"):
+                issues.append("workflow requires 'name', 'document_type' and 'states'")
+            elif not frappe.db.exists("DocType", d.get("document_type")):
+                issues.append("DocType '{}' does not exist".format(d.get("document_type")))
+
+        if ctype == "create_workspace":
+            d = change.get("definition") or change
+            if not (d.get("title") or d.get("label")):
+                issues.append("workspace requires 'title'")
+
+        if ctype == "report":
+            from frappe_ai_studio.frappe_ai_studio.advanced_customization import validate_readonly_sql
+
+            d = change.get("definition") or change
+            if not d.get("name") or not d.get("ref_doctype"):
+                issues.append("report requires 'name' and 'ref_doctype'")
+            if d.get("report_type") == "Query Report":
+                ok, msg = validate_readonly_sql(d.get("query", ""))
+                if not ok:
+                    issues.append("query: {}".format(msg))
+            if d.get("report_type") == "Script Report":
+                ok, msg = validate_code_security(d.get("report_script", ""))
+                if not ok:
+                    issues.append("script: {}".format(msg))
+
+        if ctype in ("notification", "dashboard_chart", "number_card"):
+            d = change.get("definition") or change
+            if not d.get("document_type"):
+                issues.append("{} requires 'document_type'".format(ctype))
+
+        if ctype == "permission":
+            d = change.get("definition") or change
+            if not d.get("doctype") or not d.get("role"):
+                issues.append("permission requires 'doctype' and 'role'")
+
         report.append({"index": idx, "type": ctype, "ok": not issues, "issues": issues})
 
     failures = [r for r in report if not r["ok"]]
@@ -1367,6 +1502,66 @@ def preview_changes(app_name, changes):
             item["preview"] = "REMOVE shortcut '{}' from Workspace '{}'".format(
                 change.get("link_to"), change.get("workspace")
             )
+        elif ctype == "create_app":
+            item["preview"] = "Scaffold new app '{}'{}".format(
+                change.get("app_name") or change.get("name"),
+                " and install on site" if change.get("install") else "",
+            )
+        elif ctype == "install_app":
+            item["preview"] = "Install app '{}' on the current site".format(
+                change.get("app_name") or change.get("name")
+            )
+        elif ctype == "create_module":
+            item["preview"] = "Create module '{}' in app '{}'".format(
+                change.get("module_name") or change.get("name"), change.get("app_name")
+            )
+        elif ctype == "workflow":
+            d = change.get("definition") or change
+            item["preview"] = "Workflow '{}' on '{}' — {} state(s), {} transition(s)".format(
+                d.get("name"),
+                d.get("document_type"),
+                len(d.get("states") or []),
+                len(d.get("transitions") or []),
+            )
+        elif ctype == "create_workspace":
+            d = change.get("definition") or change
+            item["preview"] = "Create/Update Workspace '{}' ({} links, {} shortcuts)".format(
+                d.get("title") or d.get("label"),
+                len(d.get("links") or []),
+                len(d.get("shortcuts") or []),
+            )
+        elif ctype == "report":
+            d = change.get("definition") or change
+            item["preview"] = "{} '{}' on '{}'".format(
+                d.get("report_type", "Report"), d.get("name"), d.get("ref_doctype")
+            )
+        elif ctype in (
+            "notification",
+            "dashboard_chart",
+            "number_card",
+            "role",
+            "permission",
+            "print_format",
+            "web_form",
+            "workflow_state",
+            "workflow_action",
+        ):
+            d = change.get("definition") or change
+            label = (
+                d.get("name")
+                or d.get("label")
+                or d.get("role")
+                or d.get("state")
+                or d.get("action")
+                or d.get("route")
+            )
+            item["preview"] = "{}: '{}'{}".format(
+                ctype.replace("_", " ").title(),
+                label,
+                " on '{}'".format(d.get("document_type") or d.get("doctype"))
+                if (d.get("document_type") or d.get("doctype"))
+                else "",
+            )
 
         preview.append(item)
 
@@ -1396,6 +1591,85 @@ def _simple_diff(old, new):
 # ---------------------------------------------------------------------------
 # Customization helpers (for core apps like frappe/erpnext)
 # ---------------------------------------------------------------------------
+
+
+# Advanced (senior-developer) change types handled by advanced_customization.
+_ADVANCED_TYPES = {
+    "workflow",
+    "workflow_state",
+    "workflow_action",
+    "create_workspace",
+    "report",
+    "notification",
+    "dashboard_chart",
+    "number_card",
+    "role",
+    "permission",
+    "print_format",
+    "web_form",
+}
+
+
+def _apply_advanced_change(ctype, change):
+    """Dispatch a senior-developer change to advanced_customization."""
+    from frappe_ai_studio.frappe_ai_studio import advanced_customization as adv
+
+    definition = change.get("definition") or change
+
+    if ctype == "workflow":
+        return adv.safe_workflow(definition)
+    if ctype == "workflow_state":
+        adv.ensure_workflow_state(change.get("state") or change.get("name"), change.get("style", "Primary"))
+        _maybe_commit()
+        return {"status": "saved"}
+    if ctype == "workflow_action":
+        adv.ensure_workflow_action(change.get("action") or change.get("name"))
+        _maybe_commit()
+        return {"status": "saved"}
+    if ctype == "create_workspace":
+        return adv.safe_workspace_create(definition)
+    if ctype == "report":
+        return adv.safe_report(definition)
+    if ctype == "notification":
+        return adv.safe_notification(definition)
+    if ctype == "dashboard_chart":
+        return adv.safe_dashboard_chart(definition)
+    if ctype == "number_card":
+        return adv.safe_number_card(definition)
+    if ctype == "role":
+        return adv.safe_role(definition)
+    if ctype == "permission":
+        return adv.safe_permission(definition)
+    if ctype == "print_format":
+        return adv.safe_print_format(definition)
+    if ctype == "web_form":
+        return adv.safe_web_form(definition)
+    raise ValueError("Unhandled advanced change type: {}".format(ctype))
+
+
+def _apply_bench_change(ctype, change):
+    """Dispatch a bench-level change (app scaffolding / install / module)."""
+    from frappe_ai_studio.frappe_ai_studio import builder
+
+    if ctype == "create_app":
+        result = builder.scaffold_app(
+            app_name=change.get("app_name") or change.get("name"),
+            app_title=change.get("app_title") or change.get("title"),
+            app_description=change.get("app_description") or change.get("description"),
+            app_publisher=change.get("app_publisher") or change.get("publisher"),
+            app_email=change.get("app_email") or change.get("email"),
+            app_license=change.get("app_license", "mit"),
+            install=change.get("install", False),
+        )
+        _audit("create_app", app=change.get("app_name") or change.get("name"))
+        return result
+    if ctype == "install_app":
+        result = builder.install_app(change.get("app_name") or change.get("name"))
+        _audit("install_app", app=change.get("app_name") or change.get("name"))
+        return result
+    if ctype == "create_module":
+        return builder.create_module(change.get("app_name"), change.get("module_name") or change.get("name"))
+    raise ValueError("Unhandled bench change type: {}".format(ctype))
 
 
 def _apply_custom_field(change):

@@ -11,10 +11,10 @@ frappe.provide('frappe.ai_studio');
 const AS_STAGES = ['Pending', 'In Progress', 'Linting', 'Testing', 'Completed'];
 
 const AS_EXAMPLES = [
-    { icon: 'fa-table', text: 'Create a DocType "Library Member" with name, email, phone and membership status' },
-    { icon: 'fa-plus-square-o', text: 'Add a custom field "Priority" (Select: Low/Medium/High) to Task' },
-    { icon: 'fa-cogs', text: 'Write a server script that sets status to Overdue on submit for Sales Invoice' },
-    { icon: 'fa-sitemap', text: 'Add a shortcut to Customer in the CRM workspace' },
+    { icon: 'fa-rocket', text: 'Scaffold a new app "library_management" and install it, with a Library Loan DocType' },
+    { icon: 'fa-random', text: 'Add a Draft → Approved → Rejected workflow to Library Loan with a Library Manager role' },
+    { icon: 'fa-th-large', text: 'Build a "Library" workspace with shortcuts and a Loans-by-status chart' },
+    { icon: 'fa-bar-chart', text: 'Create an "Overdue Loans" query report and a daily due-date notification' },
 ];
 
 frappe.ai_studio.AIStudioPage = class AIStudioPage {

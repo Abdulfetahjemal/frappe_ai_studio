@@ -226,12 +226,14 @@ def _lint_changes(changes, target_app):
         raise ValueError("Changes must be a list")
 
     allowed_types = {
+        # Code & schema
         "write",
         "inject_method",
         "update_json",
         "create_doctype",
         "sync_doctype",
         "run_bench",
+        # Core-app customization
         "custom_field",
         "property_setter",
         "server_script",
@@ -240,12 +242,37 @@ def _lint_changes(changes, target_app):
         "workspace_link_remove",
         "workspace_shortcut",
         "workspace_shortcut_remove",
+        # Bench-level (senior developer)
+        "create_app",
+        "install_app",
+        "create_module",
+        # Advanced customization (senior developer)
+        "workflow",
+        "workflow_state",
+        "workflow_action",
+        "create_workspace",
+        "report",
+        "notification",
+        "dashboard_chart",
+        "number_card",
+        "role",
+        "permission",
+        "print_format",
+        "web_form",
     }
 
     for idx, change in enumerate(changes):
         ctype = change.get("type")
         if ctype not in allowed_types:
             raise ValueError("Unknown change type '{}' at index {}".format(ctype, idx))
+
+        # Script Report code is executed server-side — scan it.
+        if ctype == "report":
+            _d = change.get("definition") or change
+            if _d.get("report_type") == "Script Report" and _d.get("report_script"):
+                ok, msg = validate_code_security(_d.get("report_script"))
+                if not ok:
+                    raise ValueError("Security violation in report script at index {}: {}".format(idx, msg))
 
         # AST security scan for Python code
         if ctype == "write" and change.get("relative_path", "").endswith(".py"):
